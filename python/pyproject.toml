@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lombokcompress"
+version = "0.1.0"
+description = "Zero-dependency compression library: LZ4, Zstd, Deflate"
+authors = [{name = "codinglombok", email = "codinglombok@gmail.com"}]
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+keywords = ["compression", "lz4", "zstd", "deflate"]
+
+[project.urls]
+Repository = "https://github.com/codinglombok/LombokCompress"

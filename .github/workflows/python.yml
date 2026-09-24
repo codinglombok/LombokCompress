@@ -1,0 +1,29 @@
+name: Python
+
+on:
+  push:
+    branches: [main]
+    paths: ['python/**']
+  pull_request:
+    branches: [main]
+    paths: ['python/**']
+
+defaults:
+  run:
+    working-directory: python
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e .
+      - run: python -m pytest tests/ -v
+        if: hashFiles('python/tests/') != ''
+      - run: python -c "import lombokcompress; print('import OK')"

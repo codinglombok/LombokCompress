@@ -1,0 +1,21 @@
+[package]
+name = "lombokcompress"
+version = "0.1.0"
+edition = "2021"
+authors = ["codinglombok <codinglombok@gmail.com>"]
+description = "Zero-dependency compression library: LZ4, Zstd (L1-3), Deflate"
+license = "Apache-2.0"
+repository = "https://github.com/codinglombok/LombokCompress"
+keywords = ["compression", "lz4", "zstd", "deflate", "no_std"]
+categories = ["compression", "no-std"]
+
+[features]
+default = ["lz4", "std"]
+lz4 = []
+zstd = []
+deflate = []
+std = []
+
+[lib]
+name = "lombokcompress"
+path = "src/lib.rs"

@@ -1,0 +1,76 @@
+{
+  "version": "1.0.0",
+  "description": "Cross-language test vectors for LombokCompress",
+  "xxh32": [
+    {
+      "input_hex": "",
+      "seed": 0,
+      "expected": 46947589
+    },
+    {
+      "input_hex": "00",
+      "seed": 0,
+      "expected": 3523407757
+    },
+    {
+      "input_hex": "616263",
+      "seed": 0,
+      "expected": 841864234
+    },
+    {
+      "input_hex": "48656c6c6f20576f726c64",
+      "seed": 0,
+      "expected": 2609280862
+    },
+    {
+      "input_hex": "48656c6c6f20576f726c64",
+      "seed": 42,
+      "expected": 3965765672
+    }
+  ],
+  "crc32": [
+    {
+      "input_hex": "",
+      "expected": 0
+    },
+    {
+      "input_hex": "616263",
+      "expected": 891568578
+    },
+    {
+      "input_hex": "48656c6c6f20576f726c64",
+      "expected": 1243066710
+    }
+  ],
+  "adler32": [
+    {
+      "input_hex": "",
+      "expected": 1
+    },
+    {
+      "input_hex": "616263",
+      "expected": 38600999
+    },
+    {
+      "input_hex": "48656c6c6f20576f726c64",
+      "expected": 413860925
+    }
+  ],
+  "lz4_block": [
+    {
+      "description": "Empty input",
+      "input_hex": "",
+      "compressed_hex": ""
+    },
+    {
+      "description": "Short literal only",
+      "input_hex": "48656c6c6f",
+      "note": "Too short for matches, literal-only encoding"
+    },
+    {
+      "description": "Repeated pattern",
+      "input_hex": "6162636465666768696a6b6c6d6e6f706162636465666768696a6b6c6d6e6f70",
+      "note": "abcdefghijklmnopabcdefghijklmnop — should find match at offset 16"
+    }
+  ]
+}

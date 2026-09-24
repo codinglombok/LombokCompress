@@ -1,0 +1,37 @@
+# Rust
+rust/target/
+rust/Cargo.lock
+
+# TypeScript
+typescript/node_modules/
+typescript/dist/
+typescript/*.tgz
+
+# Python
+python/__pycache__/
+python/**/__pycache__/
+python/*.egg-info/
+python/dist/
+python/build/
+python/.venv/
+
+# Go
+go/bin/
+
+# PHP
+php/vendor/
+php/composer.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+test-vectors/*.tmp

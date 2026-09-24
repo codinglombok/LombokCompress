@@ -1,0 +1,49 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+    paths: ['rust/**']
+  pull_request:
+    branches: [main]
+    paths: ['rust/**']
+
+defaults:
+  run:
+    working-directory: rust
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [stable, nightly]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - run: cargo build --all-features
+      - run: cargo test --all-features
+      - run: cargo build --no-default-features
+      - run: cargo build --no-default-features --features lz4
+      - run: cargo build --no-default-features --features zstd
+      - run: cargo build --no-default-features --features deflate
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-features -- -D warnings
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt -- --check

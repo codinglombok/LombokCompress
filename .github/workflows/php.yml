@@ -1,0 +1,30 @@
+name: PHP
+
+on:
+  push:
+    branches: [main]
+    paths: ['php/**']
+  pull_request:
+    branches: [main]
+    paths: ['php/**']
+
+defaults:
+  run:
+    working-directory: php
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['8.1', '8.2', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+      - run: composer install --no-interaction
+        if: hashFiles('php/composer.lock') != ''
+      - run: php -r "require 'vendor/autoload.php'; echo 'autoload OK\n';"
+        if: hashFiles('php/vendor/autoload.php') != ''
+      - run: php -r "echo 'PHP ${{ matrix.php }} OK\n';"

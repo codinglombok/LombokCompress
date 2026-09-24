@@ -1,0 +1,40 @@
+{
+  "name": "lombokcompress",
+  "version": "0.1.0",
+  "description": "Zero-dependency compression library: LZ4, Zstd, Deflate",
+  "author": "codinglombok <codinglombok@gmail.com>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codinglombok/LombokCompress"
+  },
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js",
+      "types": "./dist/esm/index.d.ts"
+    },
+    "./lz4": {
+      "import": "./dist/esm/lz4/index.js",
+      "require": "./dist/cjs/lz4/index.js"
+    },
+    "./deflate": {
+      "import": "./dist/esm/deflate/index.js",
+      "require": "./dist/cjs/deflate/index.js"
+    },
+    "./zstd": {
+      "import": "./dist/esm/zstd/index.js",
+      "require": "./dist/cjs/zstd/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json",
+    "test": "node --test dist/esm/**/*.test.js"
+  },
+  "keywords": ["compression", "lz4", "zstd", "deflate", "zero-dependency"],
+  "files": ["dist", "README.md", "LICENSE"]
+}
