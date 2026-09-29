@@ -14,10 +14,15 @@ final class Decompress
 {
     private const ZSTD_MAGIC = 0xFD2FB528;
 
+    /** Block_Maximum_Size from RFC 8878 §3.1.1.2.3 (128 KiB). */
+    private const BLOCK_MAX_SIZE = 128 * 1024;
+
     /**
      * Decompress a Zstandard frame.
+     *
+     * $maxOutput bounds the decompressed size; set it for untrusted input.
      */
-    public static function decompress(string $data): string
+    public static function decompress(string $data, int $maxOutput = PHP_INT_MAX): string
     {
         $srcLen = strlen($data);
         if ($srcLen < 5) {
@@ -41,6 +46,7 @@ final class Decompress
         $pos++;
 
         $singleSegment = ($fhd & 0x20) !== 0;
+        $contentChecksum = ($fhd & 0x04) !== 0;
         $dictIDFlag = $fhd & 0x03;
 
         $fcsBits = ($fhd >> 6) & 0x03;
@@ -57,8 +63,24 @@ final class Decompress
         $dictIDBytes = [0, 1, 2, 4][$dictIDFlag];
         $pos += $dictIDBytes;
 
-        // Content size (skip)
-        $pos += $fcsFieldSize;
+        // Frame content size (untrusted: validated, never used to pre-allocate)
+        $contentSize = null;
+        if ($fcsFieldSize > 0) {
+            if ($pos + $fcsFieldSize > $srcLen) {
+                throw new CompressError(CompressErrorCode::UnexpectedEof, 'missing frame content size');
+            }
+            $contentSize = 0;
+            for ($i = $fcsFieldSize - 1; $i >= 0; $i--) {
+                $contentSize = $contentSize * 256 + ord($data[$pos + $i]);
+            }
+            if ($fcsFieldSize === 2) {
+                $contentSize += 256;
+            }
+            $pos += $fcsFieldSize;
+            if ($contentSize > $maxOutput) {
+                throw new CompressError(CompressErrorCode::OutputTooSmall, 'frame content size exceeds limit');
+            }
+        }
 
         $output = '';
 
@@ -74,6 +96,13 @@ final class Decompress
             $lastBlock = ($bh & 1) !== 0;
             $blockType = ($bh >> 1) & 0x03;
             $blockSize = $bh >> 3;
+
+            if ($blockSize > self::BLOCK_MAX_SIZE) {
+                throw new CompressError(CompressErrorCode::InvalidInput, 'Zstd block exceeds Block_Maximum_Size');
+            }
+            if ($blockType < 2 && strlen($output) + $blockSize > $maxOutput) {
+                throw new CompressError(CompressErrorCode::OutputTooSmall, 'decompressed data exceeds limit');
+            }
 
             switch ($blockType) {
                 case 0: // Raw
@@ -101,6 +130,14 @@ final class Decompress
             }
 
             if ($lastBlock) break;
+        }
+
+        // Content checksum (XXH64 not implemented yet): require its presence only.
+        if ($contentChecksum && $pos + 4 > $srcLen) {
+            throw new CompressError(CompressErrorCode::UnexpectedEof, 'missing content checksum');
+        }
+        if ($contentSize !== null && strlen($output) !== $contentSize) {
+            throw new CompressError(CompressErrorCode::InvalidInput, 'decompressed size != frame content size');
         }
 
         return $output;

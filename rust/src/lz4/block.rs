@@ -31,7 +31,7 @@ pub fn compress_block(input: &[u8], output: &mut [u8]) -> Result<usize, Compress
         return Ok(0);
     }
 
-    let mut hash_table = [0u16; HASH_SIZE];
+    let mut hash_table = [0u32; HASH_SIZE];
     let mut src_pos: usize = 0;
     let mut dst_pos: usize = 0;
     let mut anchor: usize = 0;
@@ -62,7 +62,7 @@ pub fn compress_block(input: &[u8], output: &mut [u8]) -> Result<usize, Compress
 
             let h = hash4(input, src_pos);
             match_pos = hash_table[h] as usize;
-            hash_table[h] = src_pos as u16;
+            hash_table[h] = src_pos as u32;
 
             if match_pos < src_pos
                 && src_pos - match_pos <= 0xFFFF
@@ -125,101 +125,66 @@ pub fn compress_block(input: &[u8], output: &mut [u8]) -> Result<usize, Compress
         dst_pos += lit_len;
 
         // Encode match
-        loop {
-            // Write offset (little-endian 16-bit)
-            let offset = (src_pos - match_pos) as u16;
-            if dst_pos + 2 > output.len() {
-                return Err(CompressError::OutputTooSmall {
-                    needed: dst_pos + 2,
-                    available: output.len(),
-                });
-            }
-            output[dst_pos] = offset as u8;
-            output[dst_pos + 1] = (offset >> 8) as u8;
-            dst_pos += 2;
+        // Write offset (little-endian 16-bit)
+        let offset = (src_pos - match_pos) as u16;
+        if dst_pos + 2 > output.len() {
+            return Err(CompressError::OutputTooSmall {
+                needed: dst_pos + 2,
+                available: output.len(),
+            });
+        }
+        output[dst_pos] = offset as u8;
+        output[dst_pos + 1] = (offset >> 8) as u8;
+        dst_pos += 2;
 
-            // Count match length beyond MIN_MATCH
-            let mut match_len = MIN_MATCH;
-            while src_pos + match_len < src_len
-                && match_pos + match_len < src_pos
-                && input[src_pos + match_len] == input[match_pos + match_len]
-            {
-                match_len += 1;
-            }
-            let extra_match = match_len - MIN_MATCH;
+        // Count match length beyond MIN_MATCH. The last LAST_LITERALS bytes
+        // must stay literals (LZ4 block format end-of-block rule).
+        let match_limit = src_len - LAST_LITERALS;
+        let mut match_len = MIN_MATCH;
+        while src_pos + match_len < match_limit
+            && input[src_pos + match_len] == input[match_pos + match_len]
+        {
+            match_len += 1;
+        }
+        let extra_match = match_len - MIN_MATCH;
 
-            // Write match length in token
-            if extra_match >= ML_MASK {
-                output[token_pos] |= ML_MASK as u8;
-                let mut remaining = extra_match - ML_MASK;
-                while remaining >= 255 {
-                    if dst_pos >= output.len() {
-                        return Err(CompressError::OutputTooSmall {
-                            needed: dst_pos + 1,
-                            available: output.len(),
-                        });
-                    }
-                    output[dst_pos] = 255;
-                    dst_pos += 1;
-                    remaining -= 255;
-                }
+        // Write match length in token
+        if extra_match >= ML_MASK {
+            output[token_pos] |= ML_MASK as u8;
+            let mut remaining = extra_match - ML_MASK;
+            while remaining >= 255 {
                 if dst_pos >= output.len() {
                     return Err(CompressError::OutputTooSmall {
                         needed: dst_pos + 1,
                         available: output.len(),
                     });
                 }
-                output[dst_pos] = remaining as u8;
+                output[dst_pos] = 255;
                 dst_pos += 1;
-            } else {
-                output[token_pos] |= extra_match as u8;
+                remaining -= 255;
             }
-
-            src_pos += match_len;
-            anchor = src_pos;
-
-            if src_pos >= src_limit {
-                return write_last_literals(
-                    input,
-                    anchor,
-                    src_len - anchor,
-                    output,
-                    dst_pos,
-                );
-            }
-
-            // Update hash table and try to find next match
-            let h = hash4(input, src_pos);
-            match_pos = hash_table[h] as usize;
-            hash_table[h] = src_pos as u16;
-
-            if match_pos >= src_pos
-                || src_pos - match_pos > 0xFFFF
-                || input[match_pos] != input[src_pos]
-                || input[match_pos + 1] != input[src_pos + 1]
-                || input[match_pos + 2] != input[src_pos + 2]
-                || input[match_pos + 3] != input[src_pos + 3]
-            {
-                // No match found, go back to outer loop
-                break;
-            }
-
-            // Found another match, encode it in the same sequence
-            // Token for zero literals + new match
-            let token_pos_new = dst_pos;
-            dst_pos += 1;
-            if dst_pos > output.len() {
+            if dst_pos >= output.len() {
                 return Err(CompressError::OutputTooSmall {
-                    needed: dst_pos,
+                    needed: dst_pos + 1,
                     available: output.len(),
                 });
             }
-            output[token_pos_new] = 0; // zero literals
-            // Continue loop to encode the match
-            // Need to reassign token_pos for the match encoding above
-            // Actually we break here and let the outer loop handle it
-            break;
+            output[dst_pos] = remaining as u8;
+            dst_pos += 1;
+        } else {
+            output[token_pos] |= extra_match as u8;
         }
+
+        src_pos += match_len;
+        anchor = src_pos;
+
+        if src_pos >= src_limit {
+            return write_last_literals(input, anchor, src_len - anchor, output, dst_pos);
+        }
+
+        // Record the current position so later data can match against it.
+        let h = hash4(input, src_pos);
+        hash_table[h] = src_pos as u32;
 
         src_pos += 1;
     }
@@ -283,17 +248,33 @@ fn write_last_literals(
 /// `output` must be large enough to hold the decompressed data.
 /// Returns the number of bytes written.
 pub fn decompress_block(input: &[u8], output: &mut [u8]) -> Result<usize, CompressError> {
+    decompress_block_with_prefix(input, output, 0)
+}
+
+/// Decompress an LZ4 block after `prefix_len` bytes of history already in
+/// `output` (linked blocks in the frame format may reference them).
+///
+/// Writes starting at `output[prefix_len]` and returns the number of bytes
+/// written by this block.
+pub fn decompress_block_with_prefix(
+    input: &[u8],
+    output: &mut [u8],
+    prefix_len: usize,
+) -> Result<usize, CompressError> {
+    if prefix_len > output.len() {
+        return Err(CompressError::InvalidInput("prefix exceeds output buffer"));
+    }
     let src_len = input.len();
     if src_len == 0 {
         return Ok(0);
     }
 
     let mut src_pos: usize = 0;
-    let mut dst_pos: usize = 0;
+    let mut dst_pos: usize = prefix_len;
 
     loop {
         if src_pos >= src_len {
-            return Ok(dst_pos);
+            return Ok(dst_pos - prefix_len);
         }
 
         // Read token
@@ -332,7 +313,7 @@ pub fn decompress_block(input: &[u8], output: &mut [u8]) -> Result<usize, Compre
 
         // Check if this is the last sequence (no match after last literals)
         if src_pos >= src_len {
-            return Ok(dst_pos);
+            return Ok(dst_pos - prefix_len);
         }
 
         // Read match offset (16-bit little-endian)
@@ -346,7 +327,9 @@ pub fn decompress_block(input: &[u8], output: &mut [u8]) -> Result<usize, Compre
             return Err(CompressError::InvalidInput("match offset is zero"));
         }
         if offset > dst_pos {
-            return Err(CompressError::InvalidInput("match offset exceeds output position"));
+            return Err(CompressError::InvalidInput(
+                "match offset exceeds output position",
+            ));
         }
 
         // Decode match length

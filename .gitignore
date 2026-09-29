@@ -35,3 +35,12 @@ Thumbs.db
 
 # Test
 test-vectors/*.tmp
+
+# Internal docs (masterplan, architecture, map, changelog, ...) stay local only.
+# Root-level *.md (README.md, etc.) remain published.
+docs/**/*.md
+docs/**/*.MD
+
+# Test caches
+.pytest_cache/
+**/.pytest_cache/

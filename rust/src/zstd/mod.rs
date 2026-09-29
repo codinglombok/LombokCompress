@@ -3,5 +3,5 @@
 pub mod compress;
 pub mod decompress;
 
-pub use compress::{zstd_compress, is_zstd, ZstdLevel};
-pub use decompress::zstd_decompress;
+pub use compress::{is_zstd, zstd_compress, ZstdLevel};
+pub use decompress::{zstd_decompress, zstd_decompress_limited};

@@ -26,7 +26,8 @@ pub fn xxh32(input: &[u8], seed: u32) -> u32 {
             i += 16;
         }
 
-        h = v1.rotate_left(1)
+        h = v1
+            .rotate_left(1)
             .wrapping_add(v2.rotate_left(7))
             .wrapping_add(v3.rotate_left(12))
             .wrapping_add(v4.rotate_left(18));
@@ -83,33 +84,28 @@ mod tests {
 
     #[test]
     fn test_xxh32_single_byte() {
-        assert_eq!(xxh32(&[0x00], 0), 0xD2163E4D); // 3523407757
+        assert_eq!(xxh32(&[0x00], 0), 0xCF65B03E); // 3479547966
     }
 
     #[test]
     fn test_xxh32_abc() {
-        assert_eq!(xxh32(b"abc", 0), 0x32D153AF); // 853817263 -- known value
+        assert_eq!(xxh32(b"abc", 0), 0x32D153FF); // 852579327 -- known value
     }
 
     #[test]
     fn test_xxh32_hello_world() {
-        let h = xxh32(b"Hello World", 0);
-        // Verify deterministic
-        assert_eq!(h, xxh32(b"Hello World", 0));
+        assert_eq!(xxh32(b"Hello World", 0), 0xB1FD16EE); // 2986153710
     }
 
     #[test]
     fn test_xxh32_with_seed() {
-        let h0 = xxh32(b"Hello World", 0);
-        let h42 = xxh32(b"Hello World", 42);
-        assert_ne!(h0, h42);
+        assert_eq!(xxh32(b"Hello World", 42), 0x8141141C); // 2168525852
     }
 
     #[test]
     fn test_xxh32_long_input() {
         // Input >= 16 bytes to exercise the 4-lane accumulator
         let data = b"abcdefghijklmnopqrstuvwxyz";
-        let h = xxh32(data, 0);
-        assert_eq!(h, xxh32(data, 0));
+        assert_eq!(xxh32(data, 0), 0x63A14D5F); // 1671515487
     }
 }

@@ -104,10 +104,27 @@ def _decode_fixed_distance(br: _BitReader) -> int:
     return code
 
 
-def deflate_decompress(data: bytes | bytearray | memoryview) -> bytes:
-    """Decompress raw deflate data."""
+# Default output cap for gzip/zlib, matching the Rust core (64 MiB).
+DEFAULT_MAX_OUTPUT = 64 * 1024 * 1024
+
+
+def _too_large(max_output: int) -> CompressError:
+    return CompressError(
+        CompressErrorCode.OUTPUT_TOO_SMALL,
+        f"decompressed data exceeds limit {max_output}",
+    )
+
+
+def deflate_decompress(
+    data: bytes | bytearray | memoryview, max_output: int | None = None
+) -> bytes:
+    """Decompress raw deflate data.
+
+    ``max_output`` bounds the decompressed size; set it for untrusted input.
+    """
     br = _BitReader(bytes(data))
     output = bytearray()
+    limit = max_output if max_output is not None else float("inf")
 
     while True:
         bfinal = br.read_bits(1)
@@ -139,6 +156,8 @@ def deflate_decompress(data: bytes | bytearray | memoryview) -> bytes:
                     CompressErrorCode.UNEXPECTED_EOF,
                     "stored block data extends past input",
                 )
+            if len(output) + length > limit:
+                raise _too_large(max_output)
             output.extend(br.data[br.pos : br.pos + length])
             br.pos += length
 
@@ -148,6 +167,8 @@ def deflate_decompress(data: bytes | bytearray | memoryview) -> bytes:
                 sym = _decode_fixed_literal(br)
 
                 if sym < 256:
+                    if len(output) >= limit:
+                        raise _too_large(max_output)
                     output.append(sym)
                 elif sym == 256:
                     break
@@ -181,6 +202,8 @@ def deflate_decompress(data: bytes | bytearray | memoryview) -> bytes:
                             CompressErrorCode.INVALID_INPUT,
                             "distance beyond output buffer",
                         )
+                    if len(output) + length > limit:
+                        raise _too_large(max_output)
                     for i in range(length):
                         output.append(output[start + i])
 
@@ -200,10 +223,12 @@ def deflate_decompress(data: bytes | bytearray | memoryview) -> bytes:
     return bytes(output)
 
 
-def gzip_decompress(data: bytes | bytearray | memoryview) -> bytes:
-    """Decompress gzip format data."""
+def gzip_decompress(
+    data: bytes | bytearray | memoryview, max_output: int = DEFAULT_MAX_OUTPUT
+) -> bytes:
+    """Decompress gzip format data (RFC 1952)."""
     src = bytes(data)
-    if len(src) < 10:
+    if len(src) < 18:
         raise CompressError(
             CompressErrorCode.UNEXPECTED_EOF, "input too short for gzip"
         )
@@ -244,14 +269,14 @@ def gzip_decompress(data: bytes | bytearray | memoryview) -> bytes:
     if flags & 0x02:
         pos += 2
 
-    if pos >= len(src):
+    if pos >= len(src) - 8:
         raise CompressError(
             CompressErrorCode.UNEXPECTED_EOF, "no compressed data in gzip"
         )
 
     # Decompress
     compressed_data = src[pos:-8]
-    decompressed = deflate_decompress(compressed_data)
+    decompressed = deflate_decompress(compressed_data, max_output)
 
     # Verify CRC32 and size
     if len(src) < 8:
@@ -277,8 +302,10 @@ def gzip_decompress(data: bytes | bytearray | memoryview) -> bytes:
     return decompressed
 
 
-def zlib_decompress(data: bytes | bytearray | memoryview) -> bytes:
-    """Decompress zlib format data."""
+def zlib_decompress(
+    data: bytes | bytearray | memoryview, max_output: int = DEFAULT_MAX_OUTPUT
+) -> bytes:
+    """Decompress zlib format data (RFC 1950)."""
     src = bytes(data)
     if len(src) < 6:
         raise CompressError(
@@ -299,14 +326,12 @@ def zlib_decompress(data: bytes | bytearray | memoryview) -> bytes:
             CompressErrorCode.UNSUPPORTED, "unsupported zlib compression method"
         )
 
-    has_dict = (flg & 0x20) != 0
-    pos = 2
-    if has_dict:
-        pos += 4  # skip dict ID
+    if flg & 0x20:
+        raise CompressError(CompressErrorCode.UNSUPPORTED, "zlib preset dictionary")
 
     # Decompress (exclude 4-byte Adler-32 trailer)
-    compressed_data = src[pos:-4]
-    decompressed = deflate_decompress(compressed_data)
+    compressed_data = src[2:-4]
+    decompressed = deflate_decompress(compressed_data, max_output)
 
     # Verify Adler-32 (big-endian)
     expected_adler = struct.unpack(">I", src[-4:])[0]

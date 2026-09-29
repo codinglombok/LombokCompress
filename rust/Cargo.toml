@@ -2,8 +2,9 @@
 name = "lombokcompress"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.70"
 authors = ["codinglombok <codinglombok@gmail.com>"]
-description = "Zero-dependency compression library: LZ4, Zstd (L1-3), Deflate"
+description = "Universal zero-dependency compression library: LZ4, Zstandard, Deflate/gzip/zlib. Part of Lombok Ecosystem."
 license = "Apache-2.0"
 repository = "https://github.com/codinglombok/LombokCompress"
 keywords = ["compression", "lz4", "zstd", "deflate", "no_std"]

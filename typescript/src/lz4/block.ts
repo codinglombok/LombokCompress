@@ -10,6 +10,7 @@ const MIN_MATCH = 4;
 const ML_MASK = 15;
 const RUN_MASK = 15;
 const MF_LIMIT = 12;
+const LAST_LITERALS = 5;
 
 /** Maximum compressed size for a given input length. */
 export function compressBound(inputLen: number): number {
@@ -28,7 +29,7 @@ export function compressBlock(input: Uint8Array): Uint8Array {
   if (srcLen === 0) return new Uint8Array(0);
 
   const output = new Uint8Array(compressBound(srcLen));
-  const hashTable = new Uint16Array(HASH_SIZE);
+  const hashTable = new Uint32Array(HASH_SIZE);
   let srcPos = 0;
   let dstPos = 0;
   let anchor = 0;
@@ -97,11 +98,12 @@ export function compressBlock(input: Uint8Array): Uint8Array {
     output[dstPos++] = offset & 0xff;
     output[dstPos++] = (offset >> 8) & 0xff;
 
-    // Count match length
+    // Count match length. The last LAST_LITERALS bytes must stay literals
+    // (LZ4 block format end-of-block rule).
+    const matchLimit = srcLen - LAST_LITERALS;
     let matchLen = MIN_MATCH;
     while (
-      srcPos + matchLen < srcLen &&
-      matchPos + matchLen < srcPos &&
+      srcPos + matchLen < matchLimit &&
       input[srcPos + matchLen] === input[matchPos + matchLen]
     ) {
       matchLen++;

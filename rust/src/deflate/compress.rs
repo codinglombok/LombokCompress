@@ -1,8 +1,8 @@
 //! Deflate compression with fixed Huffman codes.
 
-use crate::error::CompressError;
 use super::huffman::{self, BitWriter};
 use super::lz77::{self, Lz77Token};
+use crate::prelude::{vec, Vec};
 
 /// CRC32 lookup table (IEEE polynomial).
 const CRC32_TABLE: [u32; 256] = {
@@ -94,16 +94,15 @@ pub fn deflate_compress(input: &[u8]) -> Vec<u8> {
 
 /// Compress data in gzip format (RFC 1952).
 pub fn gzip_compress(input: &[u8]) -> Vec<u8> {
-    let mut output = Vec::new();
-
-    // Gzip header
-    output.push(0x1F); // ID1
-    output.push(0x8B); // ID2
-    output.push(0x08); // CM = deflate
-    output.push(0x00); // FLG = no flags
-    output.extend_from_slice(&[0, 0, 0, 0]); // MTIME
-    output.push(0x00); // XFL
-    output.push(0xFF); // OS = unknown
+    let mut output = vec![
+        0x1F, // ID1
+        0x8B, // ID2
+        0x08, // CM = deflate
+        0x00, // FLG = no flags
+        0, 0, 0, 0,    // MTIME
+        0x00, // XFL
+        0xFF, // OS = unknown
+    ];
 
     // Compressed data
     output.extend_from_slice(&deflate_compress(input));
@@ -123,9 +122,13 @@ pub fn zlib_compress(input: &[u8]) -> Vec<u8> {
     // Zlib header
     let cmf: u8 = 0x78; // CM=8 (deflate), CINFO=7 (32K window)
     let flg: u8 = 0x01; // FCHECK (makes CMF*256+FLG divisible by 31)
-    // Adjust FCHECK
+                        // Adjust FCHECK
     let check = (cmf as u16 * 256 + flg as u16) % 31;
-    let flg = if check == 0 { flg } else { flg + (31 - check) as u8 };
+    let flg = if check == 0 {
+        flg
+    } else {
+        flg + (31 - check) as u8
+    };
     output.push(cmf);
     output.push(flg);
 

@@ -1,7 +1,7 @@
 {
   "name": "lombokcompress",
   "version": "0.1.0",
-  "description": "Zero-dependency compression library: LZ4, Zstd, Deflate",
+  "description": "Universal zero-dependency compression library — LZ4, Zstandard, Deflate/gzip/zlib. Part of Lombok Ecosystem.",
   "author": "codinglombok <codinglombok@gmail.com>",
   "license": "Apache-2.0",
   "repository": {
@@ -14,27 +14,51 @@
   "types": "./dist/esm/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/esm/index.d.ts",
       "import": "./dist/esm/index.js",
-      "require": "./dist/cjs/index.js",
-      "types": "./dist/esm/index.d.ts"
+      "require": "./dist/cjs/index.js"
     },
     "./lz4": {
+      "types": "./dist/esm/lz4/index.d.ts",
       "import": "./dist/esm/lz4/index.js",
       "require": "./dist/cjs/lz4/index.js"
     },
     "./deflate": {
+      "types": "./dist/esm/deflate/index.d.ts",
       "import": "./dist/esm/deflate/index.js",
       "require": "./dist/cjs/deflate/index.js"
     },
     "./zstd": {
+      "types": "./dist/esm/zstd/index.d.ts",
       "import": "./dist/esm/zstd/index.js",
       "require": "./dist/cjs/zstd/index.js"
     }
   },
-  "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json",
-    "test": "node --test dist/esm/**/*.test.js"
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
   },
-  "keywords": ["compression", "lz4", "zstd", "deflate", "zero-dependency"],
-  "files": ["dist", "README.md", "LICENSE"]
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json','{\\\"type\\\":\\\"commonjs\\\"}\\n')\"",
+    "test": "node --test test/compress.test.mjs"
+  },
+  "keywords": [
+    "compression",
+    "lz4",
+    "zstd",
+    "zstandard",
+    "deflate",
+    "gzip",
+    "zlib",
+    "zero-dependency",
+    "lombok-ecosystem"
+  ],
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
 }

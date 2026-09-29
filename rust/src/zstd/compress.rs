@@ -1,6 +1,7 @@
 //! Zstandard compressor (levels 1-3, raw blocks).
 
 use crate::error::CompressError;
+use crate::prelude::Vec;
 
 const ZSTD_MAGIC: u32 = 0xFD2FB528;
 
@@ -10,26 +11,6 @@ pub enum ZstdLevel {
     L1,
     L2,
     L3,
-}
-
-impl ZstdLevel {
-    /// Hash log size for this level.
-    fn hash_log(&self) -> usize {
-        match self {
-            ZstdLevel::L1 => 12,
-            ZstdLevel::L2 => 13,
-            ZstdLevel::L3 => 14,
-        }
-    }
-
-    /// Search depth for this level.
-    fn search_depth(&self) -> usize {
-        match self {
-            ZstdLevel::L1 => 4,
-            ZstdLevel::L2 => 8,
-            ZstdLevel::L3 => 16,
-        }
-    }
 }
 
 /// Compress data using Zstandard (raw blocks, no FSE/Huffman entropy coding).
@@ -56,10 +37,14 @@ pub fn zstd_compress(input: &[u8], level: ZstdLevel) -> Result<Vec<u8>, Compress
         output.push(fhd);
         let sz = (content_size - 256) as u16;
         output.extend_from_slice(&sz.to_le_bytes());
-    } else {
+    } else if content_size as u64 <= u32::MAX as u64 {
         let fhd: u8 = 0xA0; // FCS_Field_Size=10 (4 bytes), Single_Segment=1
         output.push(fhd);
         output.extend_from_slice(&(content_size as u32).to_le_bytes());
+    } else {
+        let fhd: u8 = 0xE0; // FCS_Field_Size=11 (8 bytes), Single_Segment=1
+        output.push(fhd);
+        output.extend_from_slice(&(content_size as u64).to_le_bytes());
     }
 
     if input.is_empty() {
@@ -101,9 +86,7 @@ fn emit_raw_blocks(output: &mut Vec<u8>, input: &[u8]) {
         // Bit 0: Last_Block
         // Bits 1-2: Block_Type (0=Raw)
         // Bits 3-23: Block_Size
-        let bh = (if is_last { 1u32 } else { 0 })
-            | (0 << 1) // Raw block type
-            | ((block_size as u32) << 3);
+        let bh = (if is_last { 1u32 } else { 0 }) | ((block_size as u32) << 3);
         output.push((bh & 0xFF) as u8);
         output.push(((bh >> 8) & 0xFF) as u8);
         output.push(((bh >> 16) & 0xFF) as u8);
@@ -140,9 +123,7 @@ fn zstd_compress_blocks(input: &[u8], _level: ZstdLevel) -> Result<Vec<u8>, Comp
             output.push(first);
         } else {
             // Raw block (no FSE entropy coding in this simplified version)
-            let bh = (if is_last { 1u32 } else { 0 })
-                | (0 << 1) // Raw block type
-                | ((block_size as u32) << 3);
+            let bh = (if is_last { 1u32 } else { 0 }) | ((block_size as u32) << 3);
             output.push((bh & 0xFF) as u8);
             output.push(((bh >> 8) & 0xFF) as u8);
             output.push(((bh >> 16) & 0xFF) as u8);
@@ -157,8 +138,7 @@ fn zstd_compress_blocks(input: &[u8], _level: ZstdLevel) -> Result<Vec<u8>, Comp
 
 /// Check if data starts with the Zstd magic number.
 pub fn is_zstd(data: &[u8]) -> bool {
-    data.len() >= 4
-        && u32::from_le_bytes([data[0], data[1], data[2], data[3]]) == ZSTD_MAGIC
+    data.len() >= 4 && u32::from_le_bytes([data[0], data[1], data[2], data[3]]) == ZSTD_MAGIC
 }
 
 #[cfg(test)]

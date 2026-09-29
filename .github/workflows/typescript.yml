@@ -3,10 +3,12 @@ name: TypeScript
 on:
   push:
     branches: [main]
-    paths: ['typescript/**']
+    paths: ['typescript/**', 'test-vectors/**', '.github/workflows/typescript.yml']
   pull_request:
-    branches: [main]
-    paths: ['typescript/**']
+    paths: ['typescript/**', 'test-vectors/**', '.github/workflows/typescript.yml']
+
+permissions:
+  contents: read
 
 defaults:
   run:
@@ -16,13 +18,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        node: [18, 20, 22]
+        node: [18, 20, 22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm test

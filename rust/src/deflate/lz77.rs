@@ -2,6 +2,8 @@
 //!
 //! Uses a hash chain with a 32KB sliding window.
 
+use crate::prelude::{vec, Vec};
+
 const WINDOW_SIZE: usize = 32768;
 const HASH_BITS: usize = 15;
 const HASH_SIZE: usize = 1 << HASH_BITS;
@@ -98,8 +100,6 @@ pub fn lz77_compress(input: &[u8]) -> Vec<Lz77Token> {
 
 #[inline(always)]
 fn hash3(data: &[u8], pos: usize) -> usize {
-    let v = (data[pos] as u32)
-        | ((data[pos + 1] as u32) << 8)
-        | ((data[pos + 2] as u32) << 16);
+    let v = (data[pos] as u32) | ((data[pos + 1] as u32) << 8) | ((data[pos + 2] as u32) << 16);
     ((v.wrapping_mul(0x1E35A7BD)) >> (32 - HASH_BITS)) as usize
 }

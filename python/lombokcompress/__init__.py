@@ -1,4 +1,4 @@
-"""LombokCompress — Zero-dependency compression library: LZ4, Zstd, Deflate."""
+"""LombokCompress — universal zero-dependency compression library: LZ4, Zstd, Deflate."""
 
 from lombokcompress.error import CompressError, CompressErrorCode
 from lombokcompress import lz4

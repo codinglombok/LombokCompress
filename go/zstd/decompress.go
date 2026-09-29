@@ -1,11 +1,22 @@
 package zstd
 
 import (
-	lombokcompress "github.com/codinglombok/lombokcompress"
+	"math"
+
+	lombokcompress "github.com/codinglombok/lombokcompress/go"
 )
+
+// blockMaxSize is Block_Maximum_Size from RFC 8878 §3.1.1.2.3 (128 KiB).
+const blockMaxSize = 128 * 1024
 
 // Decompress decompresses a Zstandard frame.
 func Decompress(data []byte) ([]byte, error) {
+	return DecompressLimit(data, math.MaxInt)
+}
+
+// DecompressLimit decompresses a Zstandard frame, refusing to produce more
+// than maxOutput bytes. Use it for untrusted input to bound memory use.
+func DecompressLimit(data []byte, maxOutput int) ([]byte, error) {
 	if len(data) < 5 {
 		return nil, lombokcompress.NewCompressError(
 			lombokcompress.ErrUnexpectedEof, "input too short for Zstd")
@@ -26,7 +37,7 @@ func Decompress(data []byte) ([]byte, error) {
 	pos++
 
 	singleSegment := (fhd & 0x20) != 0
-	// contentChecksum := (fhd & 0x04) != 0
+	contentChecksum := (fhd & 0x04) != 0
 	dictIDFlag := fhd & 0x03
 
 	fcsBits := (fhd >> 6) & 0x03
@@ -53,8 +64,26 @@ func Decompress(data []byte) ([]byte, error) {
 	dictIDBytes := [4]int{0, 1, 2, 4}
 	pos += dictIDBytes[dictIDFlag]
 
-	// Content size (skip for now)
-	pos += fcsFieldSize
+	// Frame content size (untrusted: validated, never used to pre-allocate)
+	hasContentSize := fcsFieldSize > 0
+	var contentSize uint64
+	if hasContentSize {
+		if pos+fcsFieldSize > len(data) {
+			return nil, lombokcompress.NewCompressError(
+				lombokcompress.ErrUnexpectedEof, "missing frame content size")
+		}
+		for i := fcsFieldSize - 1; i >= 0; i-- {
+			contentSize = contentSize<<8 | uint64(data[pos+i])
+		}
+		if fcsFieldSize == 2 {
+			contentSize += 256
+		}
+		pos += fcsFieldSize
+		if contentSize > uint64(maxOutput) {
+			return nil, lombokcompress.NewCompressError(
+				lombokcompress.ErrOutputTooSmall, "frame content size exceeds limit")
+		}
+	}
 
 	output := make([]byte, 0)
 
@@ -72,9 +101,18 @@ func Decompress(data []byte) ([]byte, error) {
 		blockType := (bh >> 1) & 0x03
 		blockSize := int(bh >> 3)
 
+		if blockSize > blockMaxSize {
+			return nil, lombokcompress.NewCompressError(
+				lombokcompress.ErrInvalidInput, "Zstd block exceeds Block_Maximum_Size")
+		}
+		if blockType < 2 && blockSize > maxOutput-len(output) {
+			return nil, lombokcompress.NewCompressError(
+				lombokcompress.ErrOutputTooSmall, "decompressed data exceeds limit")
+		}
+
 		switch blockType {
 		case 0: // Raw
-			if pos+blockSize > len(data) {
+			if blockSize > len(data)-pos {
 				return nil, lombokcompress.NewCompressError(
 					lombokcompress.ErrUnexpectedEof, "raw block extends past input")
 			}
@@ -104,6 +142,16 @@ func Decompress(data []byte) ([]byte, error) {
 		if lastBlock {
 			break
 		}
+	}
+
+	// Content checksum (XXH64 not implemented yet): require its presence only.
+	if contentChecksum && len(data)-pos < 4 {
+		return nil, lombokcompress.NewCompressError(
+			lombokcompress.ErrUnexpectedEof, "missing content checksum")
+	}
+	if hasContentSize && uint64(len(output)) != contentSize {
+		return nil, lombokcompress.NewCompressError(
+			lombokcompress.ErrInvalidInput, "decompressed size != frame content size")
 	}
 
 	return output, nil

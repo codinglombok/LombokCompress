@@ -91,7 +91,20 @@ final class Decompress
         return $code;
     }
 
-    public static function deflateDecompress(string $data): string
+    /** Default output cap for gzip/zlib, matching the Rust core (64 MiB). */
+    public const DEFAULT_MAX_OUTPUT = 64 * 1024 * 1024;
+
+    private static function tooLarge(): CompressError
+    {
+        return new CompressError(CompressErrorCode::OutputTooSmall, 'decompressed data exceeds limit');
+    }
+
+    /**
+     * Decompress raw deflate data.
+     *
+     * $maxOutput bounds the decompressed size; set it for untrusted input.
+     */
+    public static function deflateDecompress(string $data, int $maxOutput = PHP_INT_MAX): string
     {
         $br = new self($data);
         $output = '';
@@ -119,6 +132,9 @@ final class Decompress
                 if ($br->pos + $length > strlen($br->data)) {
                     throw new CompressError(CompressErrorCode::UnexpectedEof, 'stored block data extends past input');
                 }
+                if (strlen($output) + $length > $maxOutput) {
+                    throw self::tooLarge();
+                }
                 $output .= substr($br->data, $br->pos, $length);
                 $br->pos += $length;
 
@@ -128,6 +144,9 @@ final class Decompress
                     $sym = $br->decodeFixedLiteral();
 
                     if ($sym < 256) {
+                        if (strlen($output) >= $maxOutput) {
+                            throw self::tooLarge();
+                        }
                         $output .= chr($sym);
                     } elseif ($sym === 256) {
                         break;
@@ -155,6 +174,9 @@ final class Decompress
                         if ($start < 0) {
                             throw new CompressError(CompressErrorCode::InvalidInput, 'distance beyond output buffer');
                         }
+                        if ($outLen + $matchLen > $maxOutput) {
+                            throw self::tooLarge();
+                        }
                         for ($i = 0; $i < $matchLen; $i++) {
                             $output .= $output[$start + $i];
                         }
@@ -173,10 +195,10 @@ final class Decompress
         return $output;
     }
 
-    public static function gzipDecompress(string $data): string
+    public static function gzipDecompress(string $data, int $maxOutput = self::DEFAULT_MAX_OUTPUT): string
     {
         $srcLen = strlen($data);
-        if ($srcLen < 10) {
+        if ($srcLen < 18) {
             throw new CompressError(CompressErrorCode::UnexpectedEof, 'input too short for gzip');
         }
 
@@ -191,24 +213,32 @@ final class Decompress
         $flags = ord($data[3]);
         $pos = 10;
 
+        $deflateEnd = $srcLen - 8;
         if ($flags & 0x04) {
+            if ($pos + 2 > $deflateEnd) {
+                throw new CompressError(CompressErrorCode::UnexpectedEof, 'missing gzip FEXTRA length');
+            }
             $xlen = ord($data[$pos]) | (ord($data[$pos + 1]) << 8);
             $pos += 2 + $xlen;
         }
         if ($flags & 0x08) {
-            while ($pos < $srcLen && $data[$pos] !== "\0") $pos++;
+            while ($pos < $deflateEnd && $data[$pos] !== "\0") $pos++;
             $pos++;
         }
         if ($flags & 0x10) {
-            while ($pos < $srcLen && $data[$pos] !== "\0") $pos++;
+            while ($pos < $deflateEnd && $data[$pos] !== "\0") $pos++;
             $pos++;
         }
         if ($flags & 0x02) {
             $pos += 2;
         }
 
-        $compressedData = substr($data, $pos, $srcLen - $pos - 8);
-        $decompressed = self::deflateDecompress($compressedData);
+        if ($pos >= $deflateEnd) {
+            throw new CompressError(CompressErrorCode::UnexpectedEof, 'gzip header extends past input');
+        }
+
+        $compressedData = substr($data, $pos, $deflateEnd - $pos);
+        $decompressed = self::deflateDecompress($compressedData, $maxOutput);
 
         $trailer = substr($data, -8);
         $expectedCRC = unpack('V', substr($trailer, 0, 4))[1];
@@ -226,7 +256,7 @@ final class Decompress
         return $decompressed;
     }
 
-    public static function zlibDecompress(string $data): string
+    public static function zlibDecompress(string $data, int $maxOutput = self::DEFAULT_MAX_OUTPUT): string
     {
         $srcLen = strlen($data);
         if ($srcLen < 6) {
@@ -244,12 +274,12 @@ final class Decompress
             throw new CompressError(CompressErrorCode::Unsupported, 'unsupported zlib compression method');
         }
 
-        $hasDict = ($flg & 0x20) !== 0;
-        $pos = 2;
-        if ($hasDict) $pos += 4;
+        if (($flg & 0x20) !== 0) {
+            throw new CompressError(CompressErrorCode::Unsupported, 'zlib preset dictionary');
+        }
 
-        $compressedData = substr($data, $pos, $srcLen - $pos - 4);
-        $decompressed = self::deflateDecompress($compressedData);
+        $compressedData = substr($data, 2, $srcLen - 6);
+        $decompressed = self::deflateDecompress($compressedData, $maxOutput);
 
         $expectedAdler = unpack('N', substr($data, -4))[1];
         $actualAdler = Compress::adler32($decompressed);
