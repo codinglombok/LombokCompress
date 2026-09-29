@@ -19,7 +19,9 @@ python/.venv/
 go/bin/
 
 # PHP
+vendor/
 php/vendor/
+composer.lock
 php/composer.lock
 
 # IDE
