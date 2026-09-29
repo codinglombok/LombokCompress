@@ -3,10 +3,12 @@ name: PHP
 on:
   push:
     branches: [main]
-    paths: ['php/**']
+    paths: ['php/**', 'test-vectors/**', '.github/workflows/php.yml']
   pull_request:
-    branches: [main]
-    paths: ['php/**']
+    paths: ['php/**', 'test-vectors/**', '.github/workflows/php.yml']
+
+permissions:
+  contents: read
 
 defaults:
   run:
@@ -16,15 +18,21 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        php: ['8.1', '8.2', '8.3']
+        php: ['8.1', '8.2', '8.3', '8.4']
     steps:
-      - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: ${{ matrix.php }}
-      - run: composer install --no-interaction
-        if: hashFiles('php/composer.lock') != ''
-      - run: php -r "require 'vendor/autoload.php'; echo 'autoload OK\n';"
-        if: hashFiles('php/vendor/autoload.php') != ''
-      - run: php -r "echo 'PHP ${{ matrix.php }} OK\n';"
+          extensions: zlib
+          tools: composer
+          coverage: none
+      - run: composer validate --strict
+      - run: composer install --no-interaction --no-progress
+      - name: Lint
+        run: find src tests -name '*.php' -print0 | xargs -0 -n1 php -l
+      - run: php tests/run.php

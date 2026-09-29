@@ -56,7 +56,8 @@ def compress_frame(
     output.append((_LZ4_MAGIC >> 24) & 0xFF)
 
     # Frame descriptor
-    flg = 0x40  # version = 01 (bits 7-6)
+    # version = 01 (bits 7-6); blocks are compressed independently (bit 5)
+    flg = 0x60
     if options.content_checksum:
         flg |= 0x04
     if options.content_size:
@@ -163,6 +164,16 @@ def decompress_frame(data: bytes | bytearray | memoryview) -> bytes:
     header_start = pos
     pos += 2
 
+    if flg >> 6 != 0x01:
+        raise CompressError(
+            CompressErrorCode.UNSUPPORTED, "unsupported LZ4 frame version"
+        )
+    block_max = _MAX_BLOCK_SIZES.get((bd >> 4) & 0x07)
+    if block_max is None:
+        raise CompressError(
+            CompressErrorCode.INVALID_INPUT, "invalid LZ4 block maximum size"
+        )
+    block_independent = (flg & 0x20) != 0
     content_checksum = (flg & 0x04) != 0
     has_content_size = (flg & 0x08) != 0
     block_checksum = (flg & 0x10) != 0
@@ -216,6 +227,12 @@ def decompress_frame(data: bytes | bytearray | memoryview) -> bytes:
         is_uncompressed = (block_size & 0x80000000) != 0
         actual_size = block_size & 0x7FFFFFFF
 
+        if actual_size > block_max:
+            raise CompressError(
+                CompressErrorCode.INVALID_INPUT,
+                "LZ4 block exceeds declared block maximum size",
+            )
+
         if pos + actual_size > len(src):
             raise CompressError(
                 CompressErrorCode.UNEXPECTED_EOF, "block data extends past input"
@@ -227,11 +244,9 @@ def decompress_frame(data: bytes | bytearray | memoryview) -> bytes:
         if is_uncompressed:
             output.extend(block_data)
         else:
-            # Need to know uncompressed size — use content_size or decompress
-            # LZ4 block decompression needs uncompressed_size, estimate with content_size
-            # or decompress adaptively
-            decompressed = _decompress_block_adaptive(block_data)
-            output.extend(decompressed)
+            # Linked blocks may reference up to 64KB of earlier output.
+            history = 0 if block_independent else min(len(output), 64 * 1024)
+            _decode_block_into(block_data, output, len(output) - history, block_max)
 
         if block_checksum:
             if pos + 4 > len(src):
@@ -282,14 +297,20 @@ def decompress_frame(data: bytes | bytearray | memoryview) -> bytes:
     return result
 
 
-def _decompress_block_adaptive(data: bytes) -> bytes:
-    """Decompress LZ4 block without knowing uncompressed size upfront."""
-    src = data
-    src_len = len(src)
-    if src_len == 0:
-        return b""
+def _decode_block_into(
+    src: bytes, output: bytearray, window_start: int, block_max: int
+) -> None:
+    """Decode one LZ4 block, appending to ``output``.
 
-    output = bytearray()
+    Matches may reach back to ``window_start``; the block may add at most
+    ``block_max`` bytes.
+    """
+    src_len = len(src)
+    limit = len(output) + block_max
+    too_large = CompressError(
+        CompressErrorCode.OUTPUT_TOO_SMALL,
+        "LZ4 block exceeds declared block maximum size",
+    )
     pos = 0
 
     while pos < src_len:
@@ -314,6 +335,8 @@ def _decompress_block_adaptive(data: bytes) -> bytes:
             raise CompressError(
                 CompressErrorCode.UNEXPECTED_EOF, "literal data extends past input"
             )
+        if len(output) + lit_len > limit:
+            raise too_large
         output.extend(src[pos : pos + lit_len])
         pos += lit_len
 
@@ -347,12 +370,12 @@ def _decompress_block_adaptive(data: bytes) -> bytes:
                     break
 
         match_start = len(output) - offset
-        if match_start < 0:
+        if match_start < window_start:
             raise CompressError(
                 CompressErrorCode.INVALID_INPUT, "match offset beyond output"
             )
 
+        if len(output) + match_len > limit:
+            raise too_large
         for i in range(match_len):
             output.append(output[match_start + i])
-
-    return bytes(output)

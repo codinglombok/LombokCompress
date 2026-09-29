@@ -1,5 +1,8 @@
 //! Huffman coding for Deflate compression.
 
+use crate::error::CompressError;
+use crate::prelude::Vec;
+
 /// Fixed Huffman literal/length codes (RFC 1951 Section 3.2.6).
 ///
 /// Lit Value | Bits | Codes
@@ -152,6 +155,12 @@ pub struct BitWriter {
     nbits: u8,
 }
 
+impl Default for BitWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BitWriter {
     pub fn new() -> Self {
         Self {
@@ -201,10 +210,11 @@ impl<'a> BitReader<'a> {
     }
 
     /// Read `count` bits (LSB first).
-    pub fn read_bits(&mut self, count: u8) -> Result<u32, ()> {
+    pub fn read_bits(&mut self, count: u8) -> Result<u32, CompressError> {
+        debug_assert!(count <= 24);
         while self.nbits < count {
             if self.pos >= self.data.len() {
-                return Err(());
+                return Err(CompressError::UnexpectedEof);
             }
             self.bits |= (self.data[self.pos] as u32) << self.nbits;
             self.pos += 1;

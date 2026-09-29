@@ -22,10 +22,18 @@ impl core::fmt::Display for CompressError {
         match self {
             Self::InvalidInput(msg) => write!(f, "invalid input: {}", msg),
             Self::OutputTooSmall { needed, available } => {
-                write!(f, "output too small: need {} bytes, have {}", needed, available)
+                write!(
+                    f,
+                    "output too small: need {} bytes, have {}",
+                    needed, available
+                )
             }
             Self::ChecksumMismatch { expected, actual } => {
-                write!(f, "checksum mismatch: expected 0x{:08X}, got 0x{:08X}", expected, actual)
+                write!(
+                    f,
+                    "checksum mismatch: expected 0x{:08X}, got 0x{:08X}",
+                    expected, actual
+                )
             }
             Self::Unsupported(msg) => write!(f, "unsupported: {}", msg),
             Self::UnexpectedEof => write!(f, "unexpected end of input"),

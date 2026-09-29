@@ -2,9 +2,10 @@
 //!
 //! Wraps LZ4 block compression with framing, checksums, and content size.
 
-use crate::error::CompressError;
 use super::block;
 use super::xxhash::xxh32;
+use crate::error::CompressError;
+use crate::prelude::{vec, Vec};
 
 const LZ4_MAGIC: u32 = 0x184D2204;
 const END_MARK: u32 = 0x00000000;
@@ -36,10 +37,21 @@ impl Default for FrameOptions {
 /// Block size ID for frame header.
 fn block_size_id(max_block_size: usize) -> u8 {
     match max_block_size {
-        0..=65536 => 4,       // 64KB
-        65537..=262144 => 5,  // 256KB
+        0..=65536 => 4,        // 64KB
+        65537..=262144 => 5,   // 256KB
         262145..=1048576 => 6, // 1MB
         _ => 7,                // 4MB
+    }
+}
+
+/// Block maximum size in bytes for a frame block size ID (4..=7).
+fn block_max_size(id: u8) -> Option<usize> {
+    match id {
+        4 => Some(64 * 1024),
+        5 => Some(256 * 1024),
+        6 => Some(1024 * 1024),
+        7 => Some(4 * 1024 * 1024),
+        _ => None,
     }
 }
 
@@ -51,12 +63,15 @@ pub fn compress_frame(input: &[u8], opts: &FrameOptions) -> Result<Vec<u8>, Comp
     output.extend_from_slice(&LZ4_MAGIC.to_le_bytes());
 
     // Frame descriptor (FLG + BD + optional content size + header checksum)
+    // Blocks are compressed independently, so advertise Block_Independence.
     let flg: u8 = 0x40 // version = 01
+        | 0x20
         | if opts.content_size { 0x08 } else { 0 }
         | if opts.content_checksum { 0x04 } else { 0 }
         | if opts.block_checksum { 0x10 } else { 0 };
 
-    let bd: u8 = block_size_id(opts.max_block_size) << 4;
+    let bs_id = block_size_id(opts.max_block_size);
+    let bd: u8 = bs_id << 4;
 
     output.push(flg);
     output.push(bd);
@@ -72,7 +87,8 @@ pub fn compress_frame(input: &[u8], opts: &FrameOptions) -> Result<Vec<u8>, Comp
 
     // Compress blocks
     let mut pos = 0;
-    let max_bs = opts.max_block_size;
+    // Blocks are cut at the size advertised in BD so decoders can bound them.
+    let max_bs = block_max_size(bs_id).unwrap_or(64 * 1024);
     let mut block_buf = vec![0u8; block::compress_bound(max_bs)];
 
     while pos < input.len() {
@@ -93,11 +109,12 @@ pub fn compress_frame(input: &[u8], opts: &FrameOptions) -> Result<Vec<u8>, Comp
         }
 
         if opts.block_checksum {
-            let start = output.len() - if csize == 0 || csize >= chunk.len() {
-                chunk.len()
-            } else {
-                csize
-            };
+            let start = output.len()
+                - if csize == 0 || csize >= chunk.len() {
+                    chunk.len()
+                } else {
+                    csize
+                };
             let bc = xxh32(&output[start..], 0);
             output.extend_from_slice(&bc.to_le_bytes());
         }
@@ -116,6 +133,9 @@ pub fn compress_frame(input: &[u8], opts: &FrameOptions) -> Result<Vec<u8>, Comp
 
     Ok(output)
 }
+
+/// Upper bound for buffers pre-allocated from untrusted header fields.
+const MAX_INITIAL_CAPACITY: usize = 1 << 20;
 
 /// Decompress an LZ4 frame.
 pub fn decompress_frame(input: &[u8]) -> Result<Vec<u8>, CompressError> {
@@ -138,10 +158,17 @@ pub fn decompress_frame(input: &[u8]) -> Result<Vec<u8>, CompressError> {
     let has_content_size = (flg & 0x08) != 0;
     let has_content_checksum = (flg & 0x04) != 0;
     let has_block_checksum = (flg & 0x10) != 0;
+    let block_independent = (flg & 0x20) != 0;
+    if flg >> 6 != 0x01 {
+        return Err(CompressError::Unsupported("LZ4 frame version"));
+    }
 
-    // BD
-    let _bd = input[pos];
+    // BD: block maximum size (LZ4 frame spec: IDs 4..=7 → 64KB..4MB)
+    let bd = input[pos];
     pos += 1;
+    let block_max = block_max_size((bd >> 4) & 0x07).ok_or(CompressError::InvalidInput(
+        "invalid LZ4 block maximum size",
+    ))?;
 
     // Content size
     let content_size = if has_content_size {
@@ -149,8 +176,14 @@ pub fn decompress_frame(input: &[u8]) -> Result<Vec<u8>, CompressError> {
             return Err(CompressError::UnexpectedEof);
         }
         let sz = u64::from_le_bytes([
-            input[pos], input[pos + 1], input[pos + 2], input[pos + 3],
-            input[pos + 4], input[pos + 5], input[pos + 6], input[pos + 7],
+            input[pos],
+            input[pos + 1],
+            input[pos + 2],
+            input[pos + 3],
+            input[pos + 4],
+            input[pos + 5],
+            input[pos + 6],
+            input[pos + 7],
         ]);
         pos += 8;
         Some(sz as usize)
@@ -159,19 +192,30 @@ pub fn decompress_frame(input: &[u8]) -> Result<Vec<u8>, CompressError> {
     };
 
     // Header checksum
-    let _hc = input[pos];
+    if pos >= input.len() {
+        return Err(CompressError::UnexpectedEof);
+    }
+    let hc = input[pos];
+    if hc != (xxh32(&input[4..pos], 0) >> 8) as u8 {
+        return Err(CompressError::InvalidInput(
+            "LZ4 frame header checksum mismatch",
+        ));
+    }
     pos += 1;
 
-    let mut output = Vec::with_capacity(content_size.unwrap_or(4096));
+    // The declared content size is untrusted: never pre-allocate from it alone.
+    let mut output = Vec::with_capacity(core::cmp::min(
+        content_size.unwrap_or(4096),
+        MAX_INITIAL_CAPACITY,
+    ));
 
     // Read blocks
     loop {
         if pos + 4 > input.len() {
             return Err(CompressError::UnexpectedEof);
         }
-        let block_size_raw = u32::from_le_bytes([
-            input[pos], input[pos + 1], input[pos + 2], input[pos + 3],
-        ]);
+        let block_size_raw =
+            u32::from_le_bytes([input[pos], input[pos + 1], input[pos + 2], input[pos + 3]]);
         pos += 4;
 
         if block_size_raw == END_MARK {
@@ -181,7 +225,12 @@ pub fn decompress_frame(input: &[u8]) -> Result<Vec<u8>, CompressError> {
         let is_uncompressed = (block_size_raw & 0x80000000) != 0;
         let block_size = (block_size_raw & 0x7FFFFFFF) as usize;
 
-        if pos + block_size > input.len() {
+        if block_size > block_max {
+            return Err(CompressError::InvalidInput(
+                "LZ4 block exceeds declared block maximum size",
+            ));
+        }
+        if block_size > input.len() - pos {
             return Err(CompressError::UnexpectedEof);
         }
 
@@ -189,26 +238,40 @@ pub fn decompress_frame(input: &[u8]) -> Result<Vec<u8>, CompressError> {
             output.extend_from_slice(&input[pos..pos + block_size]);
         } else {
             let block_data = &input[pos..pos + block_size];
-            // Estimate decompressed size
-            let est_size = content_size.unwrap_or(block_size * 4);
+            // A block never decompresses to more than the block maximum size.
+            // Linked blocks may reference up to 64KB of earlier output.
             let old_len = output.len();
-            output.resize(old_len + est_size, 0);
-
-            match block::decompress_block(block_data, &mut output[old_len..]) {
-                Ok(n) => output.truncate(old_len + n),
-                Err(CompressError::OutputTooSmall { .. }) => {
-                    // Retry with larger buffer
-                    output.resize(old_len + est_size * 4, 0);
-                    let n = block::decompress_block(block_data, &mut output[old_len..])?;
-                    output.truncate(old_len + n);
-                }
-                Err(e) => return Err(e),
-            }
+            let history = if block_independent {
+                0
+            } else {
+                core::cmp::min(old_len, 64 * 1024)
+            };
+            let base = old_len - history;
+            output.resize(old_len + block_max, 0);
+            let n = block::decompress_block_with_prefix(block_data, &mut output[base..], history)?;
+            output.truncate(old_len + n);
         }
         pos += block_size;
 
         if has_block_checksum {
-            pos += 4; // skip block checksum
+            if input.len() - pos < 4 {
+                return Err(CompressError::UnexpectedEof);
+            }
+            let expected =
+                u32::from_le_bytes([input[pos], input[pos + 1], input[pos + 2], input[pos + 3]]);
+            let actual = xxh32(&input[pos - block_size..pos], 0);
+            if expected != actual {
+                return Err(CompressError::ChecksumMismatch { expected, actual });
+            }
+            pos += 4;
+        }
+    }
+
+    if let Some(expected) = content_size {
+        if output.len() != expected {
+            return Err(CompressError::InvalidInput(
+                "LZ4 frame content size does not match decoded length",
+            ));
         }
     }
 
@@ -217,9 +280,8 @@ pub fn decompress_frame(input: &[u8]) -> Result<Vec<u8>, CompressError> {
         if pos + 4 > input.len() {
             return Err(CompressError::UnexpectedEof);
         }
-        let expected = u32::from_le_bytes([
-            input[pos], input[pos + 1], input[pos + 2], input[pos + 3],
-        ]);
+        let expected =
+            u32::from_le_bytes([input[pos], input[pos + 1], input[pos + 2], input[pos + 3]]);
         let actual = xxh32(&output, 0);
         if expected != actual {
             return Err(CompressError::ChecksumMismatch { expected, actual });

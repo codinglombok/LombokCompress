@@ -1,14 +1,15 @@
 package lz4
 
 import (
-	lombokcompress "github.com/codinglombok/lombokcompress"
+	lombokcompress "github.com/codinglombok/lombokcompress/go"
 )
 
 const (
-	hashLog  = 12
-	hashSize = 1 << hashLog
-	minMatch = 4
-	mfLimit  = 12
+	hashLog      = 12
+	hashSize     = 1 << hashLog
+	minMatch     = 4
+	mfLimit      = 12
+	lastLiterals = 5
 )
 
 // CompressBound returns the maximum compressed size for a given input size.
@@ -55,7 +56,9 @@ func CompressBlock(src []byte) []byte {
 		// Extend match forward
 		matchPos := pos + minMatch
 		refPos := ref + minMatch
-		for matchPos < srcLen && src[matchPos] == src[refPos] {
+		// The last lastLiterals bytes must stay literals (LZ4 end-of-block rule).
+		matchLimit := srcLen - lastLiterals
+		for matchPos < matchLimit && src[matchPos] == src[refPos] {
 			matchPos++
 			refPos++
 		}
@@ -128,6 +131,10 @@ func CompressBlock(src []byte) []byte {
 // DecompressBlock decompresses LZ4 block format data.
 func DecompressBlock(src []byte, uncompressedSize int) ([]byte, error) {
 	srcLen := len(src)
+	if uncompressedSize < 0 {
+		return nil, lombokcompress.NewCompressError(
+			lombokcompress.ErrInvalidInput, "negative uncompressed size")
+	}
 	if srcLen == 0 && uncompressedSize == 0 {
 		return []byte{}, nil
 	}
@@ -158,6 +165,10 @@ func DecompressBlock(src []byte, uncompressedSize int) ([]byte, error) {
 		if pos+litLen > srcLen {
 			return nil, lombokcompress.NewCompressError(
 				lombokcompress.ErrUnexpectedEof, "literal data extends past input")
+		}
+		if litLen > uncompressedSize-len(output) {
+			return nil, lombokcompress.NewCompressError(
+				lombokcompress.ErrOutputTooSmall, "decompressed data exceeds uncompressed size")
 		}
 		output = append(output, src[pos:pos+litLen]...)
 		pos += litLen
@@ -200,6 +211,10 @@ func DecompressBlock(src []byte, uncompressedSize int) ([]byte, error) {
 				lombokcompress.ErrInvalidInput, "match offset beyond output")
 		}
 
+		if matchLen > uncompressedSize-len(output) {
+			return nil, lombokcompress.NewCompressError(
+				lombokcompress.ErrOutputTooSmall, "decompressed data exceeds uncompressed size")
+		}
 		for i := 0; i < matchLen; i++ {
 			output = append(output, output[matchStart+i])
 		}

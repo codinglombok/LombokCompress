@@ -10,22 +10,22 @@
     {
       "input_hex": "00",
       "seed": 0,
-      "expected": 3523407757
+      "expected": 3479547966
     },
     {
       "input_hex": "616263",
       "seed": 0,
-      "expected": 841864234
+      "expected": 852579327
     },
     {
       "input_hex": "48656c6c6f20576f726c64",
       "seed": 0,
-      "expected": 2609280862
+      "expected": 2986153710
     },
     {
       "input_hex": "48656c6c6f20576f726c64",
       "seed": 42,
-      "expected": 3965765672
+      "expected": 2168525852
     }
   ],
   "crc32": [
@@ -53,7 +53,7 @@
     },
     {
       "input_hex": "48656c6c6f20576f726c64",
-      "expected": 413860925
+      "expected": 403375133
     }
   ],
   "lz4_block": [
@@ -70,7 +70,7 @@
     {
       "description": "Repeated pattern",
       "input_hex": "6162636465666768696a6b6c6d6e6f706162636465666768696a6b6c6d6e6f70",
-      "note": "abcdefghijklmnopabcdefghijklmnop — should find match at offset 16"
+      "note": "abcdefghijklmnopabcdefghijklmnop \u2014 should find match at offset 16"
     }
   ]
 }

@@ -102,9 +102,26 @@ function decodeFixedLiteral(reader: BitReader): number {
   throw new CompressError(CompressErrorCode.InvalidInput, 'invalid fixed Huffman code');
 }
 
-/** Decompress raw deflate data. */
-export function deflateDecompress(input: Uint8Array): Uint8Array {
+function invalid(msg: string): CompressError {
+  return new CompressError(CompressErrorCode.InvalidInput, msg);
+}
+
+function eof(msg: string): CompressError {
+  return new CompressError(CompressErrorCode.UnexpectedEof, msg);
+}
+
+/** Default output cap for gzip/zlib, matching the Rust core (64 MiB). */
+const DEFAULT_MAX_OUTPUT = 64 * 1024 * 1024;
+
+/**
+ * Decompress raw deflate data.
+ *
+ * `maxOutput` bounds the decompressed size; set it for untrusted input.
+ */
+export function deflateDecompress(input: Uint8Array, maxOutput: number = Number.MAX_SAFE_INTEGER): Uint8Array {
   const output: number[] = [];
+  const tooLarge = () =>
+    new CompressError(CompressErrorCode.OutputTooSmall, `decompressed data exceeds limit ${maxOutput}`);
   const reader = new BitReader(input);
 
   let done = false;
@@ -115,8 +132,13 @@ export function deflateDecompress(input: Uint8Array): Uint8Array {
     if (btype === 0) {
       // Stored block
       reader.align();
+      if (reader.pos + 4 > reader.data.length) throw eof('missing stored block header');
       const len = reader.data[reader.pos] | (reader.data[reader.pos + 1] << 8);
+      const nlen = reader.data[reader.pos + 2] | (reader.data[reader.pos + 3] << 8);
       reader.pos += 4;
+      if (len !== (~nlen & 0xffff)) throw invalid('deflate stored block LEN/NLEN mismatch');
+      if (reader.pos + len > reader.data.length) throw eof('stored block extends past input');
+      if (output.length + len > maxOutput) throw tooLarge();
       for (let i = 0; i < len; i++) {
         output.push(reader.data[reader.pos++]);
       }
@@ -127,6 +149,7 @@ export function deflateDecompress(input: Uint8Array): Uint8Array {
         if (sym === 256) break;
 
         if (sym < 256) {
+          if (output.length >= maxOutput) throw tooLarge();
           output.push(sym);
         } else {
           const extraBits = lengthExtraBits(sym);
@@ -134,10 +157,13 @@ export function deflateDecompress(input: Uint8Array): Uint8Array {
           const length = decodeLength(sym, extra);
 
           const distCode = reverseBits(reader.readBits(5), 5);
+          if (sym > 285 || distCode > 29) throw invalid('invalid deflate length/distance code');
           const distExtraBits = distanceExtraBits(distCode);
           const distExtra = distExtraBits > 0 ? reader.readBits(distExtraBits) : 0;
           const distance = decodeDistance(distCode, distExtra);
 
+          if (distance > output.length) throw invalid('deflate distance exceeds output');
+          if (output.length + length > maxOutput) throw tooLarge();
           const start = output.length - distance;
           for (let i = 0; i < length; i++) {
             output.push(output[start + i]);
@@ -156,8 +182,8 @@ export function deflateDecompress(input: Uint8Array): Uint8Array {
   return new Uint8Array(output);
 }
 
-/** Decompress gzip data. */
-export function gzipDecompress(input: Uint8Array): Uint8Array {
+/** Decompress gzip data (RFC 1952). */
+export function gzipDecompress(input: Uint8Array, maxOutput: number = DEFAULT_MAX_OUTPUT): Uint8Array {
   if (input.length < 18) {
     throw new CompressError(CompressErrorCode.UnexpectedEof, 'input too short for gzip');
   }
@@ -165,16 +191,23 @@ export function gzipDecompress(input: Uint8Array): Uint8Array {
     throw new CompressError(CompressErrorCode.InvalidInput, 'invalid gzip magic');
   }
 
+  if (input[2] !== 0x08) throw invalid('unsupported gzip method');
+
   const flg = input[3];
   let pos = 10;
+  const deflateEnd = input.length - 8;
+  const skipZeroTerminated = () => {
+    while (pos < deflateEnd && input[pos] !== 0) pos++;
+    pos++; // terminator
+  };
 
   if (flg & 0x04) { const xlen = input[pos] | (input[pos + 1] << 8); pos += 2 + xlen; }
-  if (flg & 0x08) { while (input[pos++] !== 0); }
-  if (flg & 0x10) { while (input[pos++] !== 0); }
+  if (flg & 0x08) skipZeroTerminated();
+  if (flg & 0x10) skipZeroTerminated();
   if (flg & 0x02) { pos += 2; }
+  if (pos >= deflateEnd) throw eof('gzip header extends past input');
 
-  const deflateEnd = input.length - 8;
-  const decompressed = deflateDecompress(input.subarray(pos, deflateEnd));
+  const decompressed = deflateDecompress(input.subarray(pos, deflateEnd), maxOutput);
 
   const expectedCrc =
     input[deflateEnd] |
@@ -190,11 +223,19 @@ export function gzipDecompress(input: Uint8Array): Uint8Array {
     );
   }
 
+  const isize =
+    (input[deflateEnd + 4] |
+      (input[deflateEnd + 5] << 8) |
+      (input[deflateEnd + 6] << 16) |
+      (input[deflateEnd + 7] << 24)) >>>
+    0;
+  if (isize !== decompressed.length % 0x100000000) throw invalid('gzip ISIZE mismatch');
+
   return decompressed;
 }
 
-/** Decompress zlib data. */
-export function zlibDecompress(input: Uint8Array): Uint8Array {
+/** Decompress zlib data (RFC 1950). */
+export function zlibDecompress(input: Uint8Array, maxOutput: number = DEFAULT_MAX_OUTPUT): Uint8Array {
   if (input.length < 6) {
     throw new CompressError(CompressErrorCode.UnexpectedEof, 'input too short for zlib');
   }
@@ -202,7 +243,12 @@ export function zlibDecompress(input: Uint8Array): Uint8Array {
     throw new CompressError(CompressErrorCode.InvalidInput, 'unsupported zlib method');
   }
 
-  const decompressed = deflateDecompress(input.subarray(2, input.length - 4));
+  if (((input[0] << 8) | input[1]) % 31 !== 0) throw invalid('zlib header check failed');
+  if (input[1] & 0x20) {
+    throw new CompressError(CompressErrorCode.Unsupported, 'zlib preset dictionary');
+  }
+
+  const decompressed = deflateDecompress(input.subarray(2, input.length - 4), maxOutput);
 
   const expectedAdler =
     ((input[input.length - 4] << 24) |

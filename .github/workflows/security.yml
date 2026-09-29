@@ -1,0 +1,97 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: go
+            build-mode: autobuild
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: rust
+            build-mode: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.language == 'go'
+        with:
+          go-version: stable
+          cache: false
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:${{ matrix.language }}
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Rust (cargo-audit)
+        working-directory: rust
+        run: |
+          cargo install cargo-audit --locked
+          cargo generate-lockfile
+          cargo audit --deny warnings
+      - name: Go (govulncheck)
+        working-directory: go
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: TypeScript (npm audit)
+        working-directory: typescript
+        run: npm audit --audit-level=low
+      - name: Python (pip-audit)
+        working-directory: python
+        run: |
+          python -m pip install pip-audit
+          pip-audit --strict .
+      - name: Zero runtime dependencies
+        run: |
+          test -z "$(sed -n '/^\[dependencies\]/,/^\[/p' rust/Cargo.toml | grep -v '^\[' | grep -v '^\s*$')"
+          test "$(grep -c require go/go.mod)" = "0"
+          test "$(node -p "Object.keys(require('./typescript/package.json').dependencies ?? {}).length")" = "0"
+          python -c "import tomllib,sys; sys.exit(len(tomllib.load(open('python/pyproject.toml','rb'))['project'].get('dependencies', [])))"
+          php -r '$c=json_decode(file_get_contents("php/composer.json"),true); exit(count(array_diff(array_keys($c["require"]), ["php"])));'

@@ -8,6 +8,7 @@ import { compressBlock } from './block.js';
 
 const LZ4_MAGIC = 0x184D2204;
 
+/** Block maximum size by BD block size ID (LZ4 frame spec). */
 const MAX_BLOCK_SIZES: Record<number, number> = {
   4: 64 * 1024,
   5: 256 * 1024,
@@ -51,7 +52,8 @@ export function compressFrame(
   writeU32LE(output, LZ4_MAGIC);
 
   // Frame descriptor: FLG + BD
-  let flgByte = 0x40; // version = 01
+  // version = 01; blocks are compressed independently (Block_Independence)
+  let flgByte = 0x60;
   if (opts.contentChecksum) flgByte |= 0x04;
   if (opts.contentSize) flgByte |= 0x08;
 
@@ -130,6 +132,14 @@ export function decompressFrame(data: Uint8Array): Uint8Array {
   const headerStart = pos;
   pos += 2;
 
+  if (flg >> 6 !== 0x01) {
+    throw new CompressError(CompressErrorCode.Unsupported, 'unsupported LZ4 frame version');
+  }
+  const blockMax = MAX_BLOCK_SIZES[(bd >> 4) & 0x07];
+  if (blockMax === undefined) {
+    throw new CompressError(CompressErrorCode.InvalidInput, 'invalid LZ4 block maximum size');
+  }
+  const blockIndependent = (flg & 0x20) !== 0;
   const contentChecksum = (flg & 0x04) !== 0;
   const hasContentSize = (flg & 0x08) !== 0;
   const blockChecksum = (flg & 0x10) !== 0;
@@ -173,6 +183,10 @@ export function decompressFrame(data: Uint8Array): Uint8Array {
     const isUncompressed = (blockSize & 0x80000000) !== 0;
     const actualSize = blockSize & 0x7fffffff;
 
+    if (actualSize > blockMax) {
+      throw new CompressError(CompressErrorCode.InvalidInput, 'LZ4 block exceeds declared block maximum size');
+    }
+
     if (pos + actualSize > data.length) {
       throw new CompressError(CompressErrorCode.UnexpectedEof, 'block data extends past input');
     }
@@ -183,8 +197,9 @@ export function decompressFrame(data: Uint8Array): Uint8Array {
     if (isUncompressed) {
       for (let i = 0; i < blockData.length; i++) output.push(blockData[i]);
     } else {
-      const decompressed = decompressBlockAdaptive(blockData);
-      for (let i = 0; i < decompressed.length; i++) output.push(decompressed[i]);
+      // Linked blocks may reference up to 64KB of earlier output.
+      const history = blockIndependent ? 0 : Math.min(output.length, 64 * 1024);
+      decompressBlockInto(blockData, output, output.length - history, blockMax);
     }
 
     if (blockChecksum) {
@@ -225,11 +240,22 @@ export function decompressFrame(data: Uint8Array): Uint8Array {
   return result;
 }
 
-function decompressBlockAdaptive(data: Uint8Array): Uint8Array {
+/**
+ * Decode one LZ4 block, appending to `output`. Matches may reach back to
+ * `windowStart`; the block may add at most `blockMax` bytes.
+ */
+function decompressBlockInto(
+  data: Uint8Array,
+  output: number[],
+  windowStart: number,
+  blockMax: number,
+): void {
   const srcLen = data.length;
-  if (srcLen === 0) return new Uint8Array(0);
+  if (srcLen === 0) return;
 
-  const output: number[] = [];
+  const limit = output.length + blockMax;
+  const tooLarge = () =>
+    new CompressError(CompressErrorCode.OutputTooSmall, 'LZ4 block exceeds declared block maximum size');
   let pos = 0;
 
   while (pos < srcLen) {
@@ -250,6 +276,7 @@ function decompressBlockAdaptive(data: Uint8Array): Uint8Array {
     if (pos + litLen > srcLen) {
       throw new CompressError(CompressErrorCode.UnexpectedEof, 'literal data extends past input');
     }
+    if (output.length + litLen > limit) throw tooLarge();
     for (let i = 0; i < litLen; i++) output.push(data[pos + i]);
     pos += litLen;
 
@@ -278,14 +305,13 @@ function decompressBlockAdaptive(data: Uint8Array): Uint8Array {
     }
 
     const matchStart = output.length - offset;
-    if (matchStart < 0) {
+    if (matchStart < windowStart) {
       throw new CompressError(CompressErrorCode.InvalidInput, 'match offset beyond output');
     }
 
+    if (output.length + matchLen > limit) throw tooLarge();
     for (let i = 0; i < matchLen; i++) {
       output.push(output[matchStart + i]);
     }
   }
-
-  return new Uint8Array(output);
 }

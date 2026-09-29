@@ -274,11 +274,11 @@ func GzipCompress(data []byte) []byte {
 
 	// Gzip header
 	output = append(output, 0x1f, 0x8b) // magic
-	output = append(output, 0x08)        // method = deflate
-	output = append(output, 0x00)        // flags
-	output = append(output, 0, 0, 0, 0)  // mtime
-	output = append(output, 0x00)        // xfl
-	output = append(output, 0xFF)        // OS = unknown
+	output = append(output, 0x08)       // method = deflate
+	output = append(output, 0x00)       // flags
+	output = append(output, 0, 0, 0, 0) // mtime
+	output = append(output, 0x00)       // xfl
+	output = append(output, 0xFF)       // OS = unknown
 
 	compressed := DeflateCompress(data)
 	output = append(output, compressed...)

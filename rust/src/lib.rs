@@ -1,6 +1,6 @@
 //! # LombokCompress
 //!
-//! Zero-dependency compression library for the Lombok Ecosystem.
+//! Universal zero-dependency compression library. Part of Lombok Ecosystem.
 //!
 //! Supports LZ4 (block + frame), Zstd (levels 1-3), and Deflate (gzip/zlib).
 //!
@@ -28,6 +28,19 @@
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
+
+/// `Vec` and `vec!` for both `std` and `no_std + alloc` builds.
+#[allow(unused_imports)]
+mod prelude {
+    #[cfg(not(feature = "std"))]
+    pub use alloc::vec;
+    #[cfg(not(feature = "std"))]
+    pub use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    pub use std::vec;
+    #[cfg(feature = "std")]
+    pub use std::vec::Vec;
+}
 
 pub mod error;
 pub mod traits;

@@ -2,8 +2,9 @@ package deflate
 
 import (
 	"encoding/binary"
+	"math"
 
-	lombokcompress "github.com/codinglombok/lombokcompress"
+	lombokcompress "github.com/codinglombok/lombokcompress/go"
 )
 
 var lengthBase = [29]int{
@@ -118,8 +119,22 @@ func decodeFixedDistance(br *bitReader) (int, error) {
 	return int(code), nil
 }
 
+// defaultMaxOutput caps gzip/zlib output like the Rust core (64 MiB).
+const defaultMaxOutput = 64 * 1024 * 1024
+
+func errTooLarge() error {
+	return lombokcompress.NewCompressError(
+		lombokcompress.ErrOutputTooSmall, "decompressed data exceeds limit")
+}
+
 // DeflateDecompress decompresses raw deflate data.
 func DeflateDecompress(data []byte) ([]byte, error) {
+	return DeflateDecompressLimit(data, math.MaxInt)
+}
+
+// DeflateDecompressLimit decompresses raw deflate data, refusing to produce
+// more than maxOutput bytes. Use it for untrusted input to bound memory use.
+func DeflateDecompressLimit(data []byte, maxOutput int) ([]byte, error) {
 	br := newBitReader(data)
 	output := make([]byte, 0)
 
@@ -156,6 +171,9 @@ func DeflateDecompress(data []byte) ([]byte, error) {
 				return nil, lombokcompress.NewCompressError(
 					lombokcompress.ErrUnexpectedEof, "stored block data extends past input")
 			}
+			if length > maxOutput-len(output) {
+				return nil, errTooLarge()
+			}
 			output = append(output, br.data[br.pos:br.pos+length]...)
 			br.pos += length
 
@@ -168,6 +186,9 @@ func DeflateDecompress(data []byte) ([]byte, error) {
 				}
 
 				if sym < 256 {
+					if len(output) >= maxOutput {
+						return nil, errTooLarge()
+					}
 					output = append(output, byte(sym))
 				} else if sym == 256 {
 					break
@@ -208,6 +229,9 @@ func DeflateDecompress(data []byte) ([]byte, error) {
 						return nil, lombokcompress.NewCompressError(
 							lombokcompress.ErrInvalidInput, "distance beyond output buffer")
 					}
+					if matchLen > maxOutput-len(output) {
+						return nil, errTooLarge()
+					}
 					for i := 0; i < matchLen; i++ {
 						output = append(output, output[start+i])
 					}
@@ -231,9 +255,14 @@ func DeflateDecompress(data []byte) ([]byte, error) {
 	return output, nil
 }
 
-// GzipDecompress decompresses gzip format data.
+// GzipDecompress decompresses gzip format data (output capped at 64 MiB).
 func GzipDecompress(data []byte) ([]byte, error) {
-	if len(data) < 10 {
+	return GzipDecompressLimit(data, defaultMaxOutput)
+}
+
+// GzipDecompressLimit decompresses gzip data with an explicit output limit.
+func GzipDecompressLimit(data []byte, maxOutput int) ([]byte, error) {
+	if len(data) < 18 {
 		return nil, lombokcompress.NewCompressError(
 			lombokcompress.ErrUnexpectedEof, "input too short for gzip")
 	}
@@ -282,13 +311,13 @@ func GzipDecompress(data []byte) ([]byte, error) {
 		pos += 2
 	}
 
-	if pos >= len(data) {
+	if pos >= len(data)-8 {
 		return nil, lombokcompress.NewCompressError(
 			lombokcompress.ErrUnexpectedEof, "no compressed data in gzip")
 	}
 
 	compressedData := data[pos : len(data)-8]
-	decompressed, err := DeflateDecompress(compressedData)
+	decompressed, err := DeflateDecompressLimit(compressedData, maxOutput)
 	if err != nil {
 		return nil, err
 	}
@@ -316,8 +345,13 @@ func GzipDecompress(data []byte) ([]byte, error) {
 	return decompressed, nil
 }
 
-// ZlibDecompress decompresses zlib format data.
+// ZlibDecompress decompresses zlib format data (output capped at 64 MiB).
 func ZlibDecompress(data []byte) ([]byte, error) {
+	return ZlibDecompressLimit(data, defaultMaxOutput)
+}
+
+// ZlibDecompressLimit decompresses zlib data with an explicit output limit.
+func ZlibDecompressLimit(data []byte, maxOutput int) ([]byte, error) {
 	if len(data) < 6 {
 		return nil, lombokcompress.NewCompressError(
 			lombokcompress.ErrUnexpectedEof, "input too short for zlib")
@@ -337,13 +371,13 @@ func ZlibDecompress(data []byte) ([]byte, error) {
 	}
 
 	hasDict := (flg & 0x20) != 0
-	pos := 2
 	if hasDict {
-		pos += 4
+		return nil, lombokcompress.NewCompressError(
+			lombokcompress.ErrUnsupported, "zlib preset dictionary")
 	}
 
-	compressedData := data[pos : len(data)-4]
-	decompressed, err := DeflateDecompress(compressedData)
+	compressedData := data[2 : len(data)-4]
+	decompressed, err := DeflateDecompressLimit(compressedData, maxOutput)
 	if err != nil {
 		return nil, err
 	}

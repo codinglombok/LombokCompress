@@ -3,7 +3,7 @@ package lz4
 import (
 	"encoding/binary"
 
-	lombokcompress "github.com/codinglombok/lombokcompress"
+	lombokcompress "github.com/codinglombok/lombokcompress/go"
 )
 
 const lz4Magic uint32 = 0x184D2204
@@ -43,7 +43,8 @@ func CompressFrame(src []byte, opts *FrameOptions) []byte {
 	output = append(output, magic...)
 
 	// FLG byte
-	flgByte := byte(0x40) // version = 01
+	// version = 01; blocks are compressed independently (Block_Independence)
+	flgByte := byte(0x60)
 	if opts.ContentChecksum {
 		flgByte |= 0x04
 	}
@@ -141,7 +142,19 @@ func DecompressFrame(src []byte) ([]byte, error) {
 	pos = 4
 
 	flg := src[pos]
+	bd := src[pos+1]
 	pos += 2 // FLG + BD
+
+	if flg>>6 != 0x01 {
+		return nil, lombokcompress.NewCompressError(
+			lombokcompress.ErrUnsupported, "unsupported LZ4 frame version")
+	}
+	blockMax, ok := maxBlockSizes[int(bd>>4)&0x07]
+	if !ok {
+		return nil, lombokcompress.NewCompressError(
+			lombokcompress.ErrInvalidInput, "invalid LZ4 block maximum size")
+	}
+	blockIndependent := (flg & 0x20) != 0
 
 	contentChecksum := (flg & 0x04) != 0
 	hasContentSize := (flg & 0x08) != 0
@@ -192,7 +205,11 @@ func DecompressFrame(src []byte) ([]byte, error) {
 		isUncompressed := (blockSize & 0x80000000) != 0
 		actualSize := int(blockSize & 0x7FFFFFFF)
 
-		if pos+actualSize > len(src) {
+		if actualSize > blockMax {
+			return nil, lombokcompress.NewCompressError(
+				lombokcompress.ErrInvalidInput, "LZ4 block exceeds declared block maximum size")
+		}
+		if actualSize > len(src)-pos {
 			return nil, lombokcompress.NewCompressError(
 				lombokcompress.ErrUnexpectedEof, "block data extends past input")
 		}
@@ -203,11 +220,16 @@ func DecompressFrame(src []byte) ([]byte, error) {
 		if isUncompressed {
 			output = append(output, blockData...)
 		} else {
-			decompressed, err := decompressBlockAdaptive(blockData)
+			// Linked blocks may reference up to 64KB of earlier output.
+			history := 0
+			if !blockIndependent {
+				history = min(len(output), 64*1024)
+			}
+			var err error
+			output, err = decodeBlockInto(blockData, output, len(output)-history, blockMax)
 			if err != nil {
 				return nil, err
 			}
-			output = append(output, decompressed...)
 		}
 
 		if blockChecksum {
@@ -246,13 +268,13 @@ func DecompressFrame(src []byte) ([]byte, error) {
 	return output, nil
 }
 
-func decompressBlockAdaptive(src []byte) ([]byte, error) {
+// decodeBlockInto decodes one LZ4 block, appending to output. Matches may
+// reach back to windowStart; the block may add at most blockMax bytes.
+func decodeBlockInto(src, output []byte, windowStart, blockMax int) ([]byte, error) {
 	srcLen := len(src)
-	if srcLen == 0 {
-		return []byte{}, nil
-	}
-
-	output := make([]byte, 0)
+	limit := len(output) + blockMax
+	tooLarge := lombokcompress.NewCompressError(
+		lombokcompress.ErrOutputTooSmall, "LZ4 block exceeds declared block maximum size")
 	pos := 0
 
 	for pos < srcLen {
@@ -278,6 +300,9 @@ func decompressBlockAdaptive(src []byte) ([]byte, error) {
 		if pos+litLen > srcLen {
 			return nil, lombokcompress.NewCompressError(
 				lombokcompress.ErrUnexpectedEof, "literal data extends past input")
+		}
+		if litLen > limit-len(output) {
+			return nil, tooLarge
 		}
 		output = append(output, src[pos:pos+litLen]...)
 		pos += litLen
@@ -315,11 +340,14 @@ func decompressBlockAdaptive(src []byte) ([]byte, error) {
 		}
 
 		matchStart := len(output) - offset
-		if matchStart < 0 {
+		if matchStart < windowStart {
 			return nil, lombokcompress.NewCompressError(
 				lombokcompress.ErrInvalidInput, "match offset beyond output")
 		}
 
+		if matchLen > limit-len(output) {
+			return nil, tooLarge
+		}
 		for i := 0; i < matchLen; i++ {
 			output = append(output, output[matchStart+i])
 		}

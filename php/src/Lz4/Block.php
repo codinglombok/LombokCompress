@@ -16,6 +16,7 @@ final class Block
     private const HASH_SIZE = 1 << self::HASH_LOG;
     private const MIN_MATCH = 4;
     private const MF_LIMIT = 12;
+    private const LAST_LITERALS = 5;
 
     public static function compressBound(int $inputSize): int
     {
@@ -24,7 +25,12 @@ final class Block
 
     private static function hash4(int $v): int
     {
-        return (($v * 0x9E3779B1) & 0xFFFFFFFF) >> (32 - self::HASH_LOG);
+        // 32x32-bit multiply mod 2^32, split so the product never exceeds
+        // PHP's signed 64-bit int (which would silently become a float).
+        $k = 0x9E3779B1;
+        $lo = ($v & 0xFFFF) * $k;
+        $hi = ((($v >> 16) * $k) & 0xFFFF) << 16;
+        return (($lo + $hi) & 0xFFFFFFFF) >> (32 - self::HASH_LOG);
     }
 
     private static function read32(string $data, int $off): int
@@ -46,7 +52,7 @@ final class Block
         }
 
         $output = '';
-        $hashTable = array_fill(0, self::HASH_SIZE, 0);
+        $hashTable = array_fill(0, self::HASH_SIZE, -1);
         $pos = 0;
         $anchor = 0;
         $limit = $srcLen - self::MF_LIMIT;
@@ -57,7 +63,7 @@ final class Block
             $ref = $hashTable[$h];
             $hashTable[$h] = $pos;
 
-            if ($ref < $anchor || $pos - $ref > 65535 || self::read32($data, $ref) !== $curVal) {
+            if ($ref < 0 || $ref < $anchor || $pos - $ref > 65535 || self::read32($data, $ref) !== $curVal) {
                 $pos++;
                 continue;
             }
@@ -67,7 +73,9 @@ final class Block
             // Extend match
             $matchPos = $pos + self::MIN_MATCH;
             $refPos = $ref + self::MIN_MATCH;
-            while ($matchPos < $srcLen && $data[$matchPos] === $data[$refPos]) {
+            // The last LAST_LITERALS bytes must stay literals (LZ4 end-of-block rule).
+            $matchLimit = $srcLen - self::LAST_LITERALS;
+            while ($matchPos < $matchLimit && $data[$matchPos] === $data[$refPos]) {
                 $matchPos++;
                 $refPos++;
             }
@@ -129,6 +137,9 @@ final class Block
     public static function decompress(string $data, int $uncompressedSize): string
     {
         $srcLen = strlen($data);
+        if ($uncompressedSize < 0) {
+            throw new CompressError(CompressErrorCode::InvalidInput, 'negative uncompressed size');
+        }
         if ($srcLen === 0 && $uncompressedSize === 0) {
             return '';
         }
@@ -155,6 +166,9 @@ final class Block
 
             if ($pos + $litLen > $srcLen) {
                 throw new CompressError(CompressErrorCode::UnexpectedEof, 'literal data extends past input');
+            }
+            if (strlen($output) + $litLen > $uncompressedSize) {
+                throw new CompressError(CompressErrorCode::OutputTooSmall, 'decompressed data exceeds uncompressed size');
             }
             $output .= substr($data, $pos, $litLen);
             $pos += $litLen;
@@ -190,6 +204,9 @@ final class Block
                 throw new CompressError(CompressErrorCode::InvalidInput, 'match offset beyond output');
             }
 
+            if ($outLen + $matchLen > $uncompressedSize) {
+                throw new CompressError(CompressErrorCode::OutputTooSmall, 'decompressed data exceeds uncompressed size');
+            }
             for ($i = 0; $i < $matchLen; $i++) {
                 $output .= $output[$matchStart + $i];
             }
