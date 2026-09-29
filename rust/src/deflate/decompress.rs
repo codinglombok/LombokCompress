@@ -1,21 +1,18 @@
 //! Deflate decompression (inflate).
 
-use crate::error::CompressError;
+use super::compress::{adler32, crc32};
 use super::huffman::{self, BitReader};
-use super::compress::{crc32, adler32};
+use crate::error::CompressError;
+use crate::prelude::Vec;
 
 /// Decompress raw deflate data.
 pub fn deflate_decompress(input: &[u8], max_output: usize) -> Result<Vec<u8>, CompressError> {
-    let mut output = Vec::with_capacity(core::cmp::min(max_output, input.len() * 4));
+    let mut output = Vec::with_capacity(core::cmp::min(max_output, input.len().saturating_mul(4)));
     let mut reader = BitReader::new(input);
 
     loop {
-        let bfinal = reader
-            .read_bits(1)
-            .map_err(|_| CompressError::UnexpectedEof)?;
-        let btype = reader
-            .read_bits(2)
-            .map_err(|_| CompressError::UnexpectedEof)?;
+        let bfinal = reader.read_bits(1)?;
+        let btype = reader.read_bits(2)?;
 
         match btype {
             0b00 => {
@@ -26,12 +23,23 @@ pub fn deflate_decompress(input: &[u8], max_output: usize) -> Result<Vec<u8>, Co
                 }
                 let len = reader.data[reader.pos] as usize
                     | ((reader.data[reader.pos + 1] as usize) << 8);
-                let _nlen = reader.data[reader.pos + 2] as usize
+                let nlen = reader.data[reader.pos + 2] as usize
                     | ((reader.data[reader.pos + 3] as usize) << 8);
                 reader.pos += 4;
 
+                if len != (!nlen & 0xFFFF) {
+                    return Err(CompressError::InvalidInput(
+                        "deflate stored block LEN/NLEN mismatch",
+                    ));
+                }
                 if reader.pos + len > reader.data.len() {
                     return Err(CompressError::UnexpectedEof);
+                }
+                if len > max_output - output.len() {
+                    return Err(CompressError::OutputTooSmall {
+                        needed: output.len() + len,
+                        available: max_output,
+                    });
                 }
                 output.extend_from_slice(&reader.data[reader.pos..reader.pos + len]);
                 reader.pos += len;
@@ -42,7 +50,9 @@ pub fn deflate_decompress(input: &[u8], max_output: usize) -> Result<Vec<u8>, Co
             }
             0b10 => {
                 // Dynamic Huffman — simplified: decode the code length tables
-                return Err(CompressError::Unsupported("dynamic Huffman not yet implemented"));
+                return Err(CompressError::Unsupported(
+                    "dynamic Huffman not yet implemented",
+                ));
             }
             _ => {
                 return Err(CompressError::InvalidInput("invalid deflate block type"));
@@ -85,24 +95,23 @@ fn inflate_fixed_huffman(
             // Length code (257-285)
             let extra_bits = length_extra_bits(sym);
             let extra = if extra_bits > 0 {
-                reader
-                    .read_bits(extra_bits)
-                    .map_err(|_| CompressError::UnexpectedEof)? as u16
+                reader.read_bits(extra_bits)? as u16
             } else {
                 0
             };
             let length = huffman::decode_length(sym, extra);
 
             // Decode distance (5-bit fixed code, stored MSB-first)
-            let raw_dist = reader
-                .read_bits(5)
-                .map_err(|_| CompressError::UnexpectedEof)? as u16;
+            let raw_dist = reader.read_bits(5)? as u16;
             let dist_code = huffman::reverse_bits(raw_dist, 5);
+            if sym > 285 || dist_code > 29 {
+                return Err(CompressError::InvalidInput(
+                    "invalid deflate length/distance code",
+                ));
+            }
             let dist_extra_bits = distance_extra_bits(dist_code);
             let dist_extra = if dist_extra_bits > 0 {
-                reader
-                    .read_bits(dist_extra_bits)
-                    .map_err(|_| CompressError::UnexpectedEof)? as u16
+                reader.read_bits(dist_extra_bits)? as u16
             } else {
                 0
             };
@@ -135,9 +144,7 @@ fn inflate_fixed_huffman(
 /// Decode a literal/length symbol from fixed Huffman codes.
 fn decode_fixed_literal(reader: &mut BitReader) -> Result<u16, CompressError> {
     // Read 7 bits first
-    let b7 = reader
-        .read_bits(7)
-        .map_err(|_| CompressError::UnexpectedEof)? as u16;
+    let b7 = reader.read_bits(7)? as u16;
     let rev7 = huffman::reverse_bits(b7, 7);
 
     // Codes 256-279 are 7-bit (0000000 - 0010111)
@@ -146,31 +153,27 @@ fn decode_fixed_literal(reader: &mut BitReader) -> Result<u16, CompressError> {
     }
 
     // Read 1 more bit (8 total)
-    let b8_extra = reader
-        .read_bits(1)
-        .map_err(|_| CompressError::UnexpectedEof)? as u16;
-    let b8 = (b7 | (b8_extra << 7)) as u16;
+    let b8_extra = reader.read_bits(1)? as u16;
+    let b8 = b7 | (b8_extra << 7);
     let rev8 = huffman::reverse_bits(b8, 8);
 
     // Codes 0-143 are 8-bit (00110000 - 10111111)
-    if rev8 >= 0x30 && rev8 <= 0xBF {
+    if (0x30..=0xBF).contains(&rev8) {
         return Ok(rev8 - 0x30);
     }
 
     // Codes 280-287 are 8-bit (11000000 - 11000111)
-    if rev8 >= 0xC0 && rev8 <= 0xC7 {
+    if (0xC0..=0xC7).contains(&rev8) {
         return Ok(rev8 - 0xC0 + 280);
     }
 
     // Read 1 more bit (9 total)
-    let b9_extra = reader
-        .read_bits(1)
-        .map_err(|_| CompressError::UnexpectedEof)? as u16;
-    let b9 = (b8 | (b9_extra << 8)) as u16;
+    let b9_extra = reader.read_bits(1)? as u16;
+    let b9 = b8 | (b9_extra << 8);
     let rev9 = huffman::reverse_bits(b9, 9);
 
     // Codes 144-255 are 9-bit (110010000 - 111111111)
-    if rev9 >= 0x190 && rev9 <= 0x1FF {
+    if (0x190..=0x1FF).contains(&rev9) {
         return Ok(rev9 - 0x190 + 144);
     }
 
@@ -244,12 +247,11 @@ pub fn gzip_decompress(input: &[u8]) -> Result<Vec<u8>, CompressError> {
         pos += 2;
     }
 
-    if pos >= input.len() {
-        return Err(CompressError::UnexpectedEof);
-    }
-
     // Deflate data ends 8 bytes before the end (CRC32 + ISIZE)
     let deflate_end = input.len() - 8;
+    if pos >= deflate_end {
+        return Err(CompressError::UnexpectedEof);
+    }
     let deflate_data = &input[pos..deflate_end];
 
     let decompressed = deflate_decompress(deflate_data, 64 * 1024 * 1024)?;
@@ -269,6 +271,17 @@ pub fn gzip_decompress(input: &[u8]) -> Result<Vec<u8>, CompressError> {
         });
     }
 
+    // ISIZE: original length modulo 2^32
+    let isize = u32::from_le_bytes([
+        input[deflate_end + 4],
+        input[deflate_end + 5],
+        input[deflate_end + 6],
+        input[deflate_end + 7],
+    ]);
+    if isize != decompressed.len() as u32 {
+        return Err(CompressError::InvalidInput("gzip ISIZE mismatch"));
+    }
+
     Ok(decompressed)
 }
 
@@ -279,11 +292,17 @@ pub fn zlib_decompress(input: &[u8]) -> Result<Vec<u8>, CompressError> {
     }
 
     let cmf = input[0];
-    let _flg = input[1];
+    let flg = input[1];
 
     // Verify CM = 8 (deflate)
     if cmf & 0x0F != 8 {
         return Err(CompressError::InvalidInput("unsupported zlib method"));
+    }
+    if ((cmf as u16) << 8 | flg as u16) % 31 != 0 {
+        return Err(CompressError::InvalidInput("zlib header check failed"));
+    }
+    if flg & 0x20 != 0 {
+        return Err(CompressError::Unsupported("zlib preset dictionary"));
     }
 
     let deflate_data = &input[2..input.len() - 4];
@@ -309,8 +328,8 @@ pub fn zlib_decompress(input: &[u8]) -> Result<Vec<u8>, CompressError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::compress;
+    use super::*;
 
     #[test]
     fn test_deflate_roundtrip() {

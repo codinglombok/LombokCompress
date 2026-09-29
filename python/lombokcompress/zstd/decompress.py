@@ -6,9 +6,18 @@ from lombokcompress.error import CompressError, CompressErrorCode
 
 _ZSTD_MAGIC = 0xFD2FB528
 
+# Block_Maximum_Size from RFC 8878 section 3.1.1.2.3 (128 KiB).
+_BLOCK_MAX_SIZE = 128 * 1024
 
-def zstd_decompress(data: bytes | bytearray | memoryview) -> bytes:
-    """Decompress a Zstandard frame."""
+
+def zstd_decompress(
+    data: bytes | bytearray | memoryview, max_output: int | None = None
+) -> bytes:
+    """Decompress a Zstandard frame.
+
+    ``max_output`` bounds the decompressed size; set it for untrusted input.
+    """
+    limit = max_output if max_output is not None else float("inf")
     src = bytes(data)
     if len(src) < 5:
         raise CompressError(
@@ -53,28 +62,22 @@ def zstd_decompress(data: bytes | bytearray | memoryview) -> bytes:
     dict_id_bytes = [0, 1, 2, 4][dict_id_flag]
     pos += dict_id_bytes
 
-    # Content size
+    # Content size (little-endian; untrusted, only validated)
     content_size = None
     if fcs_field_size > 0:
-        if fcs_field_size == 1:
-            content_size = src[pos]
-        elif fcs_field_size == 2:
-            content_size = (src[pos] | (src[pos + 1] << 8)) + 256
-        elif fcs_field_size == 4:
-            content_size = (
-                src[pos]
-                | (src[pos + 1] << 8)
-                | (src[pos + 2] << 16)
-                | ((src[pos + 3] << 24) & 0xFFFFFFFF)
+        if pos + fcs_field_size > len(src):
+            raise CompressError(
+                CompressErrorCode.UNEXPECTED_EOF, "missing frame content size"
             )
-        elif fcs_field_size == 8:
-            content_size = (
-                src[pos]
-                | (src[pos + 1] << 8)
-                | (src[pos + 2] << 16)
-                | ((src[pos + 3] << 24) & 0xFFFFFFFF)
-            )
+        content_size = int.from_bytes(src[pos : pos + fcs_field_size], "little")
+        if fcs_field_size == 2:
+            content_size += 256
         pos += fcs_field_size
+        if content_size > limit:
+            raise CompressError(
+                CompressErrorCode.OUTPUT_TOO_SMALL,
+                f"frame content size {content_size} exceeds limit {max_output}",
+            )
 
     output = bytearray()
 
@@ -91,6 +94,16 @@ def zstd_decompress(data: bytes | bytearray | memoryview) -> bytes:
         last_block = (bh & 1) != 0
         block_type = (bh >> 1) & 0x03
         block_size = bh >> 3
+
+        if block_size > _BLOCK_MAX_SIZE:
+            raise CompressError(
+                CompressErrorCode.INVALID_INPUT, "Zstd block exceeds Block_Maximum_Size"
+            )
+        if block_type < 2 and len(output) + block_size > limit:
+            raise CompressError(
+                CompressErrorCode.OUTPUT_TOO_SMALL,
+                f"decompressed data exceeds limit {max_output}",
+            )
 
         if block_type == 0:
             # Raw block
@@ -124,5 +137,16 @@ def zstd_decompress(data: bytes | bytearray | memoryview) -> bytes:
 
         if last_block:
             break
+
+    # Content checksum (XXH64 not implemented yet): require its presence only.
+    if content_checksum and pos + 4 > len(src):
+        raise CompressError(
+            CompressErrorCode.UNEXPECTED_EOF, "missing content checksum"
+        )
+    if content_size is not None and len(output) != content_size:
+        raise CompressError(
+            CompressErrorCode.INVALID_INPUT,
+            f"decompressed size {len(output)} != content size {content_size}",
+        )
 
     return bytes(output)

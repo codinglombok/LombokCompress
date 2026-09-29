@@ -1,6 +1,7 @@
 //! Compression and decompression traits.
 
 use crate::error::CompressError;
+use crate::prelude::Vec;
 
 /// One-shot compression.
 pub trait Compress {

@@ -16,8 +16,12 @@ enum CompressErrorCode: string
 
 class CompressError extends \RuntimeException
 {
+    /**
+     * `$code` is already declared by \Exception (int, non-readonly), so the
+     * typed error code lives in its own property.
+     */
     public function __construct(
-        public readonly CompressErrorCode $code,
+        public readonly CompressErrorCode $errorCode,
         string $message,
     ) {
         parent::__construct($message);

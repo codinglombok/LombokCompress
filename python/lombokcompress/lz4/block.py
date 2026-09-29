@@ -8,6 +8,7 @@ _HASH_LOG = 12
 _HASH_SIZE = 1 << _HASH_LOG
 _MIN_MATCH = 4
 _MF_LIMIT = 12
+_LAST_LITERALS = 5
 _MASK32 = 0xFFFFFFFF
 
 
@@ -57,7 +58,9 @@ def compress_block(data: bytes | bytearray | memoryview) -> bytes:
         # Extend match forward
         match_pos = pos + _MIN_MATCH
         ref_pos = ref + _MIN_MATCH
-        while match_pos < src_len and src[match_pos] == src[ref_pos]:
+        # The last _LAST_LITERALS bytes must stay literals (LZ4 end-of-block rule).
+        match_limit = src_len - _LAST_LITERALS
+        while match_pos < match_limit and src[match_pos] == src[ref_pos]:
             match_pos += 1
             ref_pos += 1
         match_len = match_pos - pos - _MIN_MATCH

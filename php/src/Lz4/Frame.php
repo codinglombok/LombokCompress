@@ -37,7 +37,8 @@ final class Frame
         $output .= pack('V', self::LZ4_MAGIC);
 
         // FLG byte
-        $flg = 0x40; // version = 01
+        // version = 01; blocks are compressed independently (Block_Independence)
+        $flg = 0x60;
         if ($contentChecksum) $flg |= 0x04;
         if ($contentSize) $flg |= 0x08;
 
@@ -110,7 +111,17 @@ final class Frame
         $pos = 4;
 
         $flg = ord($data[$pos]);
+        $bd = ord($data[$pos + 1]);
         $pos += 2; // FLG + BD
+
+        if (($flg >> 6) !== 0x01) {
+            throw new CompressError(CompressErrorCode::Unsupported, 'unsupported LZ4 frame version');
+        }
+        $blockMax = self::MAX_BLOCK_SIZES[($bd >> 4) & 0x07] ?? null;
+        if ($blockMax === null) {
+            throw new CompressError(CompressErrorCode::InvalidInput, 'invalid LZ4 block maximum size');
+        }
+        $blockIndependent = ($flg & 0x20) !== 0;
 
         $hasContentChecksum = ($flg & 0x04) !== 0;
         $hasContentSize = ($flg & 0x08) !== 0;
@@ -120,11 +131,17 @@ final class Frame
         $expectedContentSize = null;
 
         if ($hasContentSize) {
+            if ($pos + 8 > $srcLen) {
+                throw new CompressError(CompressErrorCode::UnexpectedEof, 'missing content size');
+            }
             $expectedContentSize = unpack('P', substr($data, $pos, 8))[1];
             $pos += 8;
         }
 
         // Header checksum
+        if ($pos >= $srcLen) {
+            throw new CompressError(CompressErrorCode::UnexpectedEof, 'missing header checksum');
+        }
         $headerData = substr($data, $headerStart, $pos - $headerStart);
         $expectedHC = (Xxhash::xxh32($headerData, 0) >> 8) & 0xFF;
         $actualHC = ord($data[$pos]);
@@ -149,6 +166,9 @@ final class Frame
             $isUncompressed = ($blockSize & 0x80000000) !== 0;
             $actualSize = $blockSize & 0x7FFFFFFF;
 
+            if ($actualSize > $blockMax) {
+                throw new CompressError(CompressErrorCode::InvalidInput, 'LZ4 block exceeds declared block maximum size');
+            }
             if ($pos + $actualSize > $srcLen) {
                 throw new CompressError(CompressErrorCode::UnexpectedEof, 'block data extends past input');
             }
@@ -159,7 +179,9 @@ final class Frame
             if ($isUncompressed) {
                 $output .= $blockData;
             } else {
-                $output .= self::decompressBlockAdaptive($blockData);
+                // Linked blocks may reference up to 64KB of earlier output.
+                $history = $blockIndependent ? 0 : min(strlen($output), 64 * 1024);
+                self::decodeBlockInto($blockData, $output, strlen($output) - $history, $blockMax);
             }
 
             if ($hasBlockChecksum) {
@@ -193,12 +215,14 @@ final class Frame
         return $output;
     }
 
-    private static function decompressBlockAdaptive(string $data): string
+    /**
+     * Decode one LZ4 block, appending to $output. Matches may reach back to
+     * $windowStart; the block may add at most $blockMax bytes.
+     */
+    private static function decodeBlockInto(string $data, string &$output, int $windowStart, int $blockMax): void
     {
         $srcLen = strlen($data);
-        if ($srcLen === 0) return '';
-
-        $output = '';
+        $limit = strlen($output) + $blockMax;
         $pos = 0;
 
         while ($pos < $srcLen) {
@@ -220,6 +244,9 @@ final class Frame
 
             if ($pos + $litLen > $srcLen) {
                 throw new CompressError(CompressErrorCode::UnexpectedEof, 'literal data extends past input');
+            }
+            if (strlen($output) + $litLen > $limit) {
+                throw new CompressError(CompressErrorCode::OutputTooSmall, 'LZ4 block exceeds declared block maximum size');
             }
             $output .= substr($data, $pos, $litLen);
             $pos += $litLen;
@@ -251,15 +278,16 @@ final class Frame
 
             $outLen = strlen($output);
             $matchStart = $outLen - $offset;
-            if ($matchStart < 0) {
+            if ($matchStart < $windowStart) {
                 throw new CompressError(CompressErrorCode::InvalidInput, 'match offset beyond output');
             }
 
+            if ($outLen + $matchLen > $limit) {
+                throw new CompressError(CompressErrorCode::OutputTooSmall, 'LZ4 block exceeds declared block maximum size');
+            }
             for ($i = 0; $i < $matchLen; $i++) {
                 $output .= $output[$matchStart + $i];
             }
         }
-
-        return $output;
     }
 }

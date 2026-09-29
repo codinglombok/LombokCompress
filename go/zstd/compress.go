@@ -2,7 +2,7 @@
 package zstd
 
 import (
-	lombokcompress "github.com/codinglombok/lombokcompress"
+	lombokcompress "github.com/codinglombok/lombokcompress/go"
 )
 
 const zstdMagic uint32 = 0xFD2FB528
