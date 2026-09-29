@@ -94,4 +94,4 @@ jobs:
           test "$(grep -c require go/go.mod)" = "0"
           test "$(node -p "Object.keys(require('./typescript/package.json').dependencies ?? {}).length")" = "0"
           python -c "import tomllib,sys; sys.exit(len(tomllib.load(open('python/pyproject.toml','rb'))['project'].get('dependencies', [])))"
-          php -r '$c=json_decode(file_get_contents("php/composer.json"),true); exit(count(array_diff(array_keys($c["require"]), ["php"])));'
+          php -r '$c=json_decode(file_get_contents("composer.json"),true); exit(count(array_diff(array_keys($c["require"]), ["php"])));'

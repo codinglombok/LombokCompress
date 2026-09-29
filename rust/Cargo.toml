@@ -1,11 +1,14 @@
 [package]
 name = "lombokcompress"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.70"
 authors = ["codinglombok <codinglombok@gmail.com>"]
 description = "Universal zero-dependency compression library: LZ4, Zstandard, Deflate/gzip/zlib. Part of Lombok Ecosystem."
 license = "Apache-2.0"
+readme = "../README.md"
+homepage = "https://github.com/codinglombok/LombokCompress"
+documentation = "https://docs.rs/lombokcompress"
 repository = "https://github.com/codinglombok/LombokCompress"
 keywords = ["compression", "lz4", "zstd", "deflate", "no_std"]
 categories = ["compression", "no-std"]

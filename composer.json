@@ -2,6 +2,16 @@
     "name": "codinglombok/lombokcompress",
     "description": "Universal zero-dependency compression library: LZ4, Zstandard, Deflate/gzip/zlib. Part of Lombok Ecosystem.",
     "type": "library",
+    "keywords": [
+        "compression",
+        "lz4",
+        "zstd",
+        "zstandard",
+        "deflate",
+        "gzip",
+        "zlib"
+    ],
+    "homepage": "https://github.com/codinglombok/LombokCompress",
     "license": "Apache-2.0",
     "authors": [
         {
@@ -9,13 +19,20 @@
             "email": "codinglombok@gmail.com"
         }
     ],
+    "support": {
+        "issues": "https://github.com/codinglombok/LombokCompress/issues",
+        "source": "https://github.com/codinglombok/LombokCompress"
+    },
     "require": {
         "php": ">=8.1"
     },
     "autoload": {
         "psr-4": {
-            "LombokCompress\\": "src/"
+            "LombokCompress\\": "php/src/"
         }
+    },
+    "scripts": {
+        "test": "php php/tests/run.php"
     },
     "minimum-stability": "stable"
 }

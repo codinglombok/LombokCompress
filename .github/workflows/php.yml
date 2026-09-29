@@ -3,16 +3,12 @@ name: PHP
 on:
   push:
     branches: [main]
-    paths: ['php/**', 'test-vectors/**', '.github/workflows/php.yml']
+    paths: ['php/**', 'composer.json', 'test-vectors/**', '.github/workflows/php.yml']
   pull_request:
-    paths: ['php/**', 'test-vectors/**', '.github/workflows/php.yml']
+    paths: ['php/**', 'composer.json', 'test-vectors/**', '.github/workflows/php.yml']
 
 permissions:
   contents: read
-
-defaults:
-  run:
-    working-directory: php
 
 jobs:
   test:
@@ -34,5 +30,5 @@ jobs:
       - run: composer validate --strict
       - run: composer install --no-interaction --no-progress
       - name: Lint
-        run: find src tests -name '*.php' -print0 | xargs -0 -n1 php -l
-      - run: php tests/run.php
+        run: find php -name '*.php' -print0 | xargs -0 -n1 php -l
+      - run: php php/tests/run.php

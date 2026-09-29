@@ -1,0 +1,278 @@
+name: Publish
+
+# Publishes one release to every registry:
+#   npm (npmjs.org) + GitHub Packages, PyPI, crates.io, Packagist, Go module proxy.
+#
+# Triggered by publishing a GitHub Release whose tag is vX.Y.Z. The tag must match
+# the versions in rust/Cargo.toml, typescript/package.json and python/pyproject.toml.
+# Run it manually (workflow_dispatch) with dry_run=true to rehearse without publishing.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to publish, e.g. v0.1.1'
+        required: true
+      dry_run:
+        description: 'Build and verify only; do not publish'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Verify versions
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      dry_run: ${{ steps.v.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          persist-credentials: false
+      - id: v
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)$ ]]; then
+            echo "::error::Release tag '$TAG' must look like vX.Y.Z"; exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          cargo=$(sed -n 's/^version = "\(.*\)"$/\1/p' rust/Cargo.toml | head -n1)
+          npm=$(node -p "require('./typescript/package.json').version")
+          py=$(python3 -c "import tomllib; print(tomllib.load(open('python/pyproject.toml','rb'))['project']['version'])")
+          bad=0
+          for pair in "rust/Cargo.toml=$cargo" "typescript/package.json=$npm" "python/pyproject.toml=$py"; do
+            if [ "${pair#*=}" != "$version" ]; then
+              echo "::error::${pair%%=*} has version ${pair#*=}, release tag is $TAG"; bad=1
+            fi
+          done
+          [ "$bad" = 0 ] || exit 1
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "dry_run=$DRY_RUN"
+          } >> "$GITHUB_OUTPUT"
+          echo "Publishing $TAG (dry run: $DRY_RUN)"
+
+  npm:
+    name: npm (npmjs.org)
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: cp ../README.md ../LICENSE .
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm test
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            npm publish --access public --dry-run
+          else
+            if [ -z "$NODE_AUTH_TOKEN" ]; then
+              echo "::error::Repository secret NPM_TOKEN is not set (npmjs.com → Access Tokens → Granular, publish)"; exit 1
+            fi
+            npm publish --access public --provenance
+          fi
+
+  github-packages:
+    name: GitHub Packages (npm)
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: '@codinglombok'
+      - run: cp ../README.md ../LICENSE .
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      # GitHub Packages requires the package scope to match the repository owner.
+      - run: npm pkg set name=@codinglombok/lombokcompress
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            npm publish --dry-run
+          else
+            npm publish
+          fi
+
+  pypi:
+    name: PyPI
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Test and build
+        working-directory: python
+        run: |
+          cp ../README.md ../LICENSE .
+          python -m pip install build twine pytest
+          python -m pip install .
+          python -m pytest tests/ -q
+          python -m build
+          python -m twine check --strict dist/*
+      - name: Publish
+        if: needs.prepare.outputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: python/dist/
+
+  crates:
+    name: crates.io
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: crates
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+      - run: cargo test --all-features
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            cargo publish --dry-run
+          else
+            if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+              echo "::error::Repository secret CARGO_REGISTRY_TOKEN is not set (crates.io → Account Settings → API Tokens, scope publish-new + publish-update)"; exit 1
+            fi
+            cargo publish
+          fi
+
+  go:
+    name: Go module (go/vX.Y.Z tag)
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the go/vX.Y.Z tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Test
+        working-directory: go
+        run: go test ./...
+      # The module lives in go/, so Go resolves versions from tags named go/vX.Y.Z.
+      - name: Tag and announce to the module proxy
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
+        run: |
+          go_tag="go/$TAG"
+          module="github.com/codinglombok/lombokcompress/go"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run: would push $go_tag at $(git rev-parse HEAD)"; exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$go_tag" >/dev/null; then
+            echo "$go_tag already exists"
+          else
+            git tag "$go_tag" HEAD
+            git push origin "refs/tags/$go_tag"
+          fi
+          for i in 1 2 3 4 5; do
+            if GOPROXY=https://proxy.golang.org go list -m "$module@$TAG"; then exit 0; fi
+            sleep $((i * 10))
+          done
+          echo "::warning::Module proxy has not indexed $module@$TAG yet; it will on first 'go get'."
+
+  packagist:
+    name: Packagist
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.3'
+          extensions: zlib
+          tools: composer
+          coverage: none
+      - run: composer validate --strict
+      - run: composer install --no-interaction --no-progress
+      - run: php php/tests/run.php
+      # Packagist reads versions from git tags. After the one-time "Submit" on
+      # packagist.org it updates through the GitHub hook; this call is a fallback.
+      - name: Notify Packagist
+        if: needs.prepare.outputs.dry_run != 'true'
+        env:
+          PACKAGIST_USERNAME: ${{ secrets.PACKAGIST_USERNAME }}
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+        run: |
+          if [ -z "$PACKAGIST_USERNAME" ] || [ -z "$PACKAGIST_TOKEN" ]; then
+            echo "::notice::PACKAGIST_USERNAME/PACKAGIST_TOKEN not set; relying on the Packagist GitHub hook."
+            exit 0
+          fi
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_TOKEN}" \
+            -d '{"repository":{"url":"https://github.com/codinglombok/LombokCompress"}}'
