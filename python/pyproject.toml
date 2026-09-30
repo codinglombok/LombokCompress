@@ -1,16 +1,31 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "lombokcompress"
-version = "0.1.0"
+version = "0.1.1"
 description = "Universal zero-dependency compression library: LZ4, Zstandard, Deflate/gzip/zlib. Part of Lombok Ecosystem."
+# README.md and LICENSE are copied in from the repository root by the publish workflow.
+readme = "README.md"
 authors = [{name = "codinglombok", email = "codinglombok@gmail.com"}]
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = []
-keywords = ["compression", "lz4", "zstd", "deflate"]
+keywords = ["compression", "lz4", "zstd", "zstandard", "deflate", "gzip", "zlib"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: System :: Archiving :: Compression",
+]
 
 [project.urls]
+Homepage = "https://github.com/codinglombok/LombokCompress"
 Repository = "https://github.com/codinglombok/LombokCompress"
+Issues = "https://github.com/codinglombok/LombokCompress/issues"
+
+[tool.setuptools.packages.find]
+include = ["lombokcompress*"]

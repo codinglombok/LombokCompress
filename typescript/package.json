@@ -1,6 +1,6 @@
 {
   "name": "lombokcompress",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Universal zero-dependency compression library — LZ4, Zstandard, Deflate/gzip/zlib. Part of Lombok Ecosystem.",
   "author": "codinglombok <codinglombok@gmail.com>",
   "license": "Apache-2.0",

@@ -149,8 +149,19 @@ test suite, run in CI:
 (cd typescript && npm ci && npm run build && npm test)
 (cd python && pip install -e . pytest && pytest tests)
 (cd go && go test ./...)
-(cd php && composer install && php tests/run.php)
+composer install && php php/tests/run.php
 ```
+
+## Releasing
+
+Publishing a GitHub Release tagged `vX.Y.Z` runs `.github/workflows/publish.yml`, which tests each
+port and publishes to npm (+ GitHub Packages as `@codinglombok/lombokcompress`), PyPI, crates.io,
+Packagist and the Go module proxy (tag `go/vX.Y.Z`, created automatically).
+
+1. Set the same version in `rust/Cargo.toml`, `typescript/package.json` and `python/pyproject.toml`.
+2. Merge to `main`, then publish a GitHub Release with tag `vX.Y.Z`.
+
+To rehearse without publishing, run the **Publish** workflow manually with `dry_run` checked.
 
 ## Lombok Ecosystem
 
